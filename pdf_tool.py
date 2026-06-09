@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib
 import io
+import logging
 import os
 import shutil
 import subprocess
@@ -15,9 +16,38 @@ from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T")
 OfficeProgressCallback = Callable[[int, int, Path, str], None]
+
+# Configuration constants
 OFFICE_BATCH_RESTART_EVERY = 20
+DEFAULT_WATERMARK_OPACITY = 0.25
+DEFAULT_WATERMARK_FONT_SIZE = 48
+DEFAULT_GLOB_PATTERN = "*.pdf"
+DEFAULT_WORD_PATTERN = "*.doc*"
+DEFAULT_EXCEL_PATTERN = "*.xls*"
+MAX_WORKERS = 64
+MIN_WORKERS = 1
+DEFAULT_WORKERS = 4
+WATERMARK_ROTATION_ANGLE = 45
+
+# Excel PDF export constants
+EXCEL_PAPER_SIZES = {
+    "Letter": 1,  # 8.5 x 11 inches
+    "Legal": 5,   # 8.5 x 14 inches
+    "A4": 9,      # 210 x 297 mm
+    "A3": 8,      # 297 x 420 mm
+    "Tabloid": 2, # 11 x 17 inches
+    "Ledger": 3,  # 17 x 11 inches
+}
+DEFAULT_EXCEL_PAPER_SIZE = "A4"
 
 
 def _validate_existing_file(path_text: str) -> Path:
@@ -47,6 +77,18 @@ def _validate_existing_dir(path_text: str) -> Path:
 
 
 def _collect_input_files(input_dir: Path, pattern: str) -> list[Path]:
+    """Collect files from a directory matching the given pattern.
+    
+    Args:
+        input_dir: Directory to search for files.
+        pattern: Glob pattern for file matching (e.g., "*.pdf").
+    
+    Returns:
+        Sorted list of matching file paths.
+    
+    Raises:
+        ValueError: If no files match the pattern.
+    """
     file_pattern = pattern.strip() if pattern.strip() else "*.pdf"
     files = sorted(path for path in input_dir.glob(file_pattern) if path.is_file())
     if not files:
@@ -90,6 +132,19 @@ def _resolve_workers(workers: int | None) -> int:
 
 
 def _parallel_process(items: list[Path], processor: Callable[[Path], T], workers: int | None) -> list[T]:
+    """Process items in parallel using a thread pool.
+    
+    Args:
+        items: List of items to process.
+        processor: Function to apply to each item.
+        workers: Number of worker threads (None for auto-detection).
+    
+    Returns:
+        List of processed results in the same order as input items.
+    
+    Raises:
+        RuntimeError: If parallel processing fails to return all results.
+    """
     if not items:
         return []
 
@@ -185,9 +240,21 @@ def _parse_page_order(order_spec: str, total_pages: int) -> list[int]:
 
 
 def rotate_pdf(input_file: Path, output_file: Path, angle: int, pages: str | None) -> None:
+    """Rotate pages in a PDF file by the specified angle.
+    
+    Args:
+        input_file: Path to the input PDF file.
+        output_file: Path to the output PDF file.
+        angle: Rotation angle in degrees (must be multiple of 90).
+        pages: Optional page range specification (e.g., "1,3,5-7").
+    
+    Raises:
+        ValueError: If angle is not a multiple of 90 or page range is invalid.
+    """
     if angle % 90 != 0:
         raise ValueError("Rotation angle must be a multiple of 90.")
 
+    logger.info(f"Rotating {input_file} by {angle} degrees")
     reader = PdfReader(str(input_file))
     writer = PdfWriter()
     pages_to_rotate = _parse_page_range(pages, len(reader.pages))
@@ -199,6 +266,8 @@ def rotate_pdf(input_file: Path, output_file: Path, angle: int, pages: str | Non
 
     with output_file.open("wb") as stream:
         writer.write(stream)
+    
+    logger.info(f"Rotation complete: {output_file}")
 
 
 def delete_page_range(input_file: Path, output_file: Path, pages: str) -> None:
@@ -230,6 +299,18 @@ def reorder_pages(input_file: Path, output_file: Path, order_spec: str) -> None:
 
 
 def split_pdf(input_file: Path, output_dir: Path, pages: str | None, prefix: str | None) -> list[Path]:
+    """Split a PDF into individual page files.
+    
+    Args:
+        input_file: Path to the input PDF file.
+        output_dir: Directory to write split PDF files.
+        pages: Optional page range to split (e.g., "1,3,5-7").
+        prefix: Optional prefix for output filenames.
+    
+    Returns:
+        List of paths to created PDF files.
+    """
+    logger.info(f"Splitting {input_file} in {output_dir}")
     reader = PdfReader(str(input_file))
 
     if pages:
@@ -248,10 +329,24 @@ def split_pdf(input_file: Path, output_dir: Path, pages: str | None, prefix: str
             writer.write(stream)
         written_files.append(output_file)
 
+    logger.info(f"Split complete: created {len(written_files)} files")
     return written_files
 
 
-def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float, font_size: int) -> None:
+def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float = DEFAULT_WATERMARK_OPACITY, font_size: int = DEFAULT_WATERMARK_FONT_SIZE) -> None:
+    """Add a text watermark to a PDF file.
+    
+    Args:
+        input_file: Path to the input PDF file.
+        output_file: Path to the output PDF file.
+        text: Watermark text to display.
+        opacity: Watermark opacity (0.0 to 1.0, default: 0.25).
+        font_size: Font size for watermark text (default: 48).
+    
+    Raises:
+        ValueError: If opacity is outside valid range.
+    """
+    logger.info(f"Adding watermark to {input_file}: text='{text}', opacity={opacity}")
     reader = PdfReader(str(input_file))
     writer = PdfWriter()
 
@@ -264,7 +359,7 @@ def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float
         watermark_canvas = canvas.Canvas(packet, pagesize=(page_width, page_height))
         watermark_canvas.saveState()
         watermark_canvas.translate(page_width / 2, page_height / 2)
-        watermark_canvas.rotate(45)
+        watermark_canvas.rotate(WATERMARK_ROTATION_ANGLE)
         try:
             watermark_canvas.setFillAlpha(opacity)
         except AttributeError:
@@ -282,9 +377,18 @@ def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float
 
     with output_file.open("wb") as stream:
         writer.write(stream)
+    
+    logger.info(f"Watermark complete: {output_file}")
 
 
 def combine_pdfs(input_files: list[Path], output_file: Path) -> None:
+    """Combine multiple PDF files into a single PDF.
+    
+    Args:
+        input_files: List of input PDF files to combine in order.
+        output_file: Path to the output combined PDF file.
+    """
+    logger.info(f"Combining {len(input_files)} PDFs into {output_file}")
     writer = PdfWriter()
     for file_path in input_files:
         reader = PdfReader(str(file_path))
@@ -293,6 +397,8 @@ def combine_pdfs(input_files: list[Path], output_file: Path) -> None:
 
     with output_file.open("wb") as stream:
         writer.write(stream)
+    
+    logger.info("Combine operation completed successfully")
 
 
 def images_to_pdf(input_images: list[Path], output_file: Path) -> None:
@@ -313,6 +419,13 @@ def images_to_pdf(input_images: list[Path], output_file: Path) -> None:
 
 
 def pdf_to_text(input_file: Path, output_file: Path) -> None:
+    """Extract text content from a PDF file.
+    
+    Args:
+        input_file: Path to the input PDF file.
+        output_file: Path to the output text file.
+    """
+    logger.info(f"Extracting text from {input_file}")
     reader = PdfReader(str(input_file))
     lines: list[str] = []
     for page_index, page in enumerate(reader.pages, start=1):
@@ -322,6 +435,7 @@ def pdf_to_text(input_file: Path, output_file: Path) -> None:
         lines.append("")
 
     output_file.write_text("\n".join(lines), encoding="utf-8")
+    logger.info(f"Text extraction complete: {output_file}")
 
 
 def print_pdf(input_file: Path) -> None:
@@ -344,6 +458,20 @@ def batch_rotate_pdfs(
     pattern: str,
     workers: int | None = None,
 ) -> list[Path]:
+    """Rotate pages in multiple PDF files in a directory.
+    
+    Args:
+        input_dir: Directory containing input PDF files.
+        output_dir: Directory to write rotated PDF files.
+        angle: Rotation angle in degrees (must be multiple of 90).
+        pages: Optional page range to rotate (e.g., "1,3,5-7").
+        pattern: Glob pattern for file matching.
+        workers: Number of worker threads.
+    
+    Returns:
+        List of paths to created PDF files.
+    """
+    logger.info(f"Batch rotating PDFs in {input_dir} by {angle} degrees")
     files = _collect_input_files(input_dir, pattern)
 
     def _process(input_file: Path) -> Path:
@@ -351,18 +479,35 @@ def batch_rotate_pdfs(
         rotate_pdf(input_file, output_file, angle, pages)
         return output_file
 
-    return _parallel_process(files, _process, workers)
+    result = _parallel_process(files, _process, workers)
+    logger.info(f"Batch rotate complete: {len(result)} files")
+    return result
 
 
 def batch_watermark_pdfs(
     input_dir: Path,
     output_dir: Path,
     text: str,
-    opacity: float,
-    font_size: int,
-    pattern: str,
+    opacity: float = DEFAULT_WATERMARK_OPACITY,
+    font_size: int = DEFAULT_WATERMARK_FONT_SIZE,
+    pattern: str = DEFAULT_GLOB_PATTERN,
     workers: int | None = None,
 ) -> list[Path]:
+    """Add watermarks to multiple PDF files in a directory.
+    
+    Args:
+        input_dir: Directory containing input PDF files.
+        output_dir: Directory to write watermarked PDF files.
+        text: Watermark text to display.
+        opacity: Watermark opacity (0.0 to 1.0).
+        font_size: Font size for watermark text.
+        pattern: Glob pattern for file matching.
+        workers: Number of worker threads.
+    
+    Returns:
+        List of paths to created PDF files.
+    """
+    logger.info(f"Batch watermarking PDFs in {input_dir} with text='{text}'")
     files = _collect_input_files(input_dir, pattern)
 
     def _process(input_file: Path) -> Path:
@@ -370,7 +515,9 @@ def batch_watermark_pdfs(
         watermark_pdf(input_file, output_file, text, opacity, font_size)
         return output_file
 
-    return _parallel_process(files, _process, workers)
+    result = _parallel_process(files, _process, workers)
+    logger.info(f"Batch watermark complete: {len(result)} files")
+    return result
 
 
 def batch_delete_pages_pdfs(
@@ -434,6 +581,18 @@ def batch_pdf_to_text(
     pattern: str,
     workers: int | None = None,
 ) -> list[Path]:
+    """Extract text from multiple PDF files in a directory.
+    
+    Args:
+        input_dir: Directory containing input PDF files.
+        output_dir: Directory to write text files.
+        pattern: Glob pattern for file matching.
+        workers: Number of worker threads.
+    
+    Returns:
+        List of paths to created text files.
+    """
+    logger.info(f"Batch extracting text from PDFs in {input_dir}")
     files = _collect_input_files(input_dir, pattern)
 
     def _process(input_file: Path) -> Path:
@@ -441,7 +600,9 @@ def batch_pdf_to_text(
         pdf_to_text(input_file, output_file)
         return output_file
 
-    return _parallel_process(files, _process, workers)
+    result = _parallel_process(files, _process, workers)
+    logger.info(f"Batch PDF to text complete: {len(result)} files")
+    return result
 
 
 def batch_print_pdfs(input_dir: Path, pattern: str, workers: int | None = None) -> int:
@@ -482,11 +643,12 @@ def _initialize_com_if_available() -> object | None:
 def word_to_pdf(input_file: Path, output_file: Path) -> None:
     win32 = _get_windows_com_client()
     pythoncom = _initialize_com_if_available()
-    word_app = win32.DispatchEx("Word.Application")
-    word_app.Visible = False
-
+    word_app = None
     document = None
+    
     try:
+        word_app = win32.DispatchEx("Word.Application")
+        word_app.Visible = False
         document = word_app.Documents.Open(str(input_file))
         if hasattr(document, "SaveAs2"):
             document.SaveAs2(str(output_file), FileFormat=17)
@@ -494,31 +656,77 @@ def word_to_pdf(input_file: Path, output_file: Path) -> None:
             document.SaveAs(str(output_file), FileFormat=17)
         _ensure_pdf_output(output_file)
     finally:
-        if document is not None:
-            document.Close(False)
-        word_app.Quit()
+        try:
+            if document is not None:
+                document.Close(False)
+        except Exception:
+            pass
+        try:
+            if word_app is not None:
+                word_app.Quit()
+        except Exception:
+            pass
         if pythoncom is not None:
-            pythoncom.CoUninitialize()
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
-def excel_to_pdf(input_file: Path, output_file: Path) -> None:
+def excel_to_pdf(input_file: Path, output_file: Path, paper_size: str = DEFAULT_EXCEL_PAPER_SIZE) -> None:
+    """Convert an Excel file to PDF with all columns fitted on one page.
+    
+    Args:
+        input_file: Path to the input Excel file.
+        output_file: Path to the output PDF file.
+        paper_size: Paper size for PDF export (Letter, Legal, A4, A3, Tabloid, Ledger).
+    
+    Raises:
+        RuntimeError: If conversion fails or output file is not created.
+    """
     win32 = _get_windows_com_client()
     pythoncom = _initialize_com_if_available()
-    excel_app = win32.DispatchEx("Excel.Application")
-    excel_app.Visible = False
-    excel_app.DisplayAlerts = False
-
+    excel_app = None
     workbook = None
+    
     try:
+        excel_app = win32.DispatchEx("Excel.Application")
+        excel_app.Visible = False
+        excel_app.DisplayAlerts = False
         workbook = excel_app.Workbooks.Open(str(input_file))
+        
+        # Configure page setup for all worksheets
+        for worksheet in workbook.Worksheets:
+            page_setup = worksheet.PageSetup
+            # Fit all columns on one page wide (height can span multiple pages)
+            page_setup.FitToPagesWide = 1
+            page_setup.FitToPagesTall = False  # Allow multiple pages tall
+            # Set paper size
+            paper_size_code = EXCEL_PAPER_SIZES.get(paper_size, EXCEL_PAPER_SIZES["A4"])
+            page_setup.PaperSize = paper_size_code
+            # Center on page
+            page_setup.CenterHorizontally = True
+            page_setup.CenterVertically = False
+        
+        # Export to PDF
         workbook.ExportAsFixedFormat(0, str(output_file))
         _ensure_pdf_output(output_file)
     finally:
-        if workbook is not None:
-            workbook.Close(False)
-        excel_app.Quit()
+        try:
+            if workbook is not None:
+                workbook.Close(False)
+        except Exception:
+            pass
+        try:
+            if excel_app is not None:
+                excel_app.Quit()
+        except Exception:
+            pass
         if pythoncom is not None:
-            pythoncom.CoUninitialize()
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 def batch_word_to_pdf(
@@ -539,10 +747,11 @@ def batch_word_to_pdf(
     for start in range(0, total, OFFICE_BATCH_RESTART_EVERY):
         chunk = files[start : start + OFFICE_BATCH_RESTART_EVERY]
         pythoncom = _initialize_com_if_available()
-        word_app = win32.DispatchEx("Word.Application")
-        word_app.Visible = False
-        word_app.DisplayAlerts = 0
+        word_app = None
         try:
+            word_app = win32.DispatchEx("Word.Application")
+            word_app.Visible = False
+            word_app.DisplayAlerts = 0
             for offset, input_file in enumerate(chunk, start=1):
                 index = start + offset
                 output_file = output_dir / f"{input_file.stem}.pdf"
@@ -572,12 +781,22 @@ def batch_word_to_pdf(
                     if not continue_on_error:
                         raise RuntimeError(message) from exc
                 finally:
-                    if document is not None:
-                        document.Close(False)
+                    try:
+                        if document is not None:
+                            document.Close(False)
+                    except Exception:
+                        pass
         finally:
-            word_app.Quit()
+            try:
+                if word_app is not None:
+                    word_app.Quit()
+            except Exception:
+                pass
             if pythoncom is not None:
-                pythoncom.CoUninitialize()
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
     return written_files
 
@@ -590,7 +809,23 @@ def batch_excel_to_pdf(
     progress_callback: OfficeProgressCallback | None = None,
     continue_on_error: bool = False,
     errors: list[str] | None = None,
+    paper_size: str = DEFAULT_EXCEL_PAPER_SIZE,
 ) -> list[Path]:
+    """Convert multiple Excel files to PDF in batch.
+    
+    Args:
+        input_dir: Directory containing input Excel files.
+        output_dir: Directory to write PDF files.
+        pattern: Glob pattern for file matching.
+        workers: Number of worker threads (forced to 1 for COM stability).
+        progress_callback: Optional callback for progress updates.
+        continue_on_error: Whether to continue on errors.
+        errors: List to collect error messages.
+        paper_size: Paper size for PDF export.
+    
+    Returns:
+        List of paths to created PDF files.
+    """
     files = _filter_office_batch_files(_collect_input_files(input_dir, pattern))
     win32 = _get_windows_com_client()
     error_list = errors if errors is not None else []
@@ -600,10 +835,11 @@ def batch_excel_to_pdf(
     for start in range(0, total, OFFICE_BATCH_RESTART_EVERY):
         chunk = files[start : start + OFFICE_BATCH_RESTART_EVERY]
         pythoncom = _initialize_com_if_available()
-        excel_app = win32.DispatchEx("Excel.Application")
-        excel_app.Visible = False
-        excel_app.DisplayAlerts = False
+        excel_app = None
         try:
+            excel_app = win32.DispatchEx("Excel.Application")
+            excel_app.Visible = False
+            excel_app.DisplayAlerts = False
             for offset, input_file in enumerate(chunk, start=1):
                 index = start + offset
                 output_file = output_dir / f"{input_file.stem}.pdf"
@@ -612,6 +848,17 @@ def batch_excel_to_pdf(
                 workbook = None
                 try:
                     workbook = excel_app.Workbooks.Open(str(input_file), ReadOnly=True)
+                    
+                    # Configure page setup for all worksheets
+                    for worksheet in workbook.Worksheets:
+                        page_setup = worksheet.PageSetup
+                        page_setup.FitToPagesWide = 1
+                        page_setup.FitToPagesTall = False
+                        paper_size_code = EXCEL_PAPER_SIZES.get(paper_size, EXCEL_PAPER_SIZES["A4"])
+                        page_setup.PaperSize = paper_size_code
+                        page_setup.CenterHorizontally = True
+                        page_setup.CenterVertically = False
+                    
                     workbook.ExportAsFixedFormat(0, str(output_file))
                     _ensure_pdf_output(output_file)
                     written_files.append(output_file)
@@ -623,12 +870,22 @@ def batch_excel_to_pdf(
                     if not continue_on_error:
                         raise RuntimeError(message) from exc
                 finally:
-                    if workbook is not None:
-                        workbook.Close(False)
+                    try:
+                        if workbook is not None:
+                            workbook.Close(False)
+                    except Exception:
+                        pass
         finally:
-            excel_app.Quit()
+            try:
+                if excel_app is not None:
+                    excel_app.Quit()
+            except Exception:
+                pass
             if pythoncom is not None:
-                pythoncom.CoUninitialize()
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
     return written_files
 
@@ -667,14 +924,14 @@ def build_parser() -> argparse.ArgumentParser:
     watermark_parser.add_argument(
         "--opacity",
         type=float,
-        default=0.25,
-        help="Watermark opacity from 0.0 to 1.0 (default: 0.25)",
+        default=DEFAULT_WATERMARK_OPACITY,
+        help=f"Watermark opacity from 0.0 to 1.0 (default: {DEFAULT_WATERMARK_OPACITY})",
     )
     watermark_parser.add_argument(
         "--font-size",
         type=int,
-        default=48,
-        help="Watermark font size (default: 48)",
+        default=DEFAULT_WATERMARK_FONT_SIZE,
+        help=f"Watermark font size (default: {DEFAULT_WATERMARK_FONT_SIZE})",
     )
 
     delete_pages_parser = edit_subparsers.add_parser(
@@ -758,7 +1015,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional pages to rotate for each file, e.g. 1,3,5-7",
     )
-    batch_rotate_parser.add_argument("--pattern", default="*.pdf", help="Glob pattern (default: *.pdf)")
+    batch_rotate_parser.add_argument(
+        "--pattern",
+        default=DEFAULT_GLOB_PATTERN,
+        help=f"Glob pattern (default: {DEFAULT_GLOB_PATTERN})",
+    )
     _add_workers_argument(batch_rotate_parser)
 
     batch_watermark_parser = batch_subparsers.add_parser(
@@ -767,9 +1028,23 @@ def build_parser() -> argparse.ArgumentParser:
     batch_watermark_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_watermark_parser.add_argument("--output-dir", required=True, help="Output folder path")
     batch_watermark_parser.add_argument("--text", required=True, help="Watermark text")
-    batch_watermark_parser.add_argument("--opacity", type=float, default=0.25, help="Opacity 0.0-1.0")
-    batch_watermark_parser.add_argument("--font-size", type=int, default=48, help="Font size")
-    batch_watermark_parser.add_argument("--pattern", default="*.pdf", help="Glob pattern (default: *.pdf)")
+    batch_watermark_parser.add_argument(
+        "--opacity",
+        type=float,
+        default=DEFAULT_WATERMARK_OPACITY,
+        help=f"Opacity 0.0-1.0 (default: {DEFAULT_WATERMARK_OPACITY})",
+    )
+    batch_watermark_parser.add_argument(
+        "--font-size",
+        type=int,
+        default=DEFAULT_WATERMARK_FONT_SIZE,
+        help=f"Font size (default: {DEFAULT_WATERMARK_FONT_SIZE})",
+    )
+    batch_watermark_parser.add_argument(
+        "--pattern",
+        default=DEFAULT_GLOB_PATTERN,
+        help=f"Glob pattern (default: {DEFAULT_GLOB_PATTERN})",
+    )
     _add_workers_argument(batch_watermark_parser)
 
     batch_delete_parser = batch_subparsers.add_parser(
@@ -778,7 +1053,11 @@ def build_parser() -> argparse.ArgumentParser:
     batch_delete_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_delete_parser.add_argument("--output-dir", required=True, help="Output folder path")
     batch_delete_parser.add_argument("--pages", required=True, help="Pages to delete, e.g. 2,4,6-8")
-    batch_delete_parser.add_argument("--pattern", default="*.pdf", help="Glob pattern (default: *.pdf)")
+    batch_delete_parser.add_argument(
+        "--pattern",
+        default=DEFAULT_GLOB_PATTERN,
+        help=f"Glob pattern (default: {DEFAULT_GLOB_PATTERN})",
+    )
     _add_workers_argument(batch_delete_parser)
 
     batch_reorder_parser = batch_subparsers.add_parser(
@@ -787,7 +1066,11 @@ def build_parser() -> argparse.ArgumentParser:
     batch_reorder_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_reorder_parser.add_argument("--output-dir", required=True, help="Output folder path")
     batch_reorder_parser.add_argument("--order", required=True, help="Complete page order, e.g. 3,1,2")
-    batch_reorder_parser.add_argument("--pattern", default="*.pdf", help="Glob pattern (default: *.pdf)")
+    batch_reorder_parser.add_argument(
+        "--pattern",
+        default=DEFAULT_GLOB_PATTERN,
+        help=f"Glob pattern (default: {DEFAULT_GLOB_PATTERN})",
+    )
     _add_workers_argument(batch_reorder_parser)
 
     batch_split_parser = batch_subparsers.add_parser("split", help="Split all matching PDFs in a folder")
@@ -803,7 +1086,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output file prefix for every split group",
     )
-    batch_split_parser.add_argument("--pattern", default="*.pdf", help="Glob pattern (default: *.pdf)")
+    batch_split_parser.add_argument(
+        "--pattern",
+        default=DEFAULT_GLOB_PATTERN,
+        help=f"Glob pattern (default: {DEFAULT_GLOB_PATTERN})",
+    )
     _add_workers_argument(batch_split_parser)
 
     batch_text_parser = batch_subparsers.add_parser(
@@ -811,12 +1098,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     batch_text_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_text_parser.add_argument("--output-dir", required=True, help="Output folder path")
-    batch_text_parser.add_argument("--pattern", default="*.pdf", help="Glob pattern (default: *.pdf)")
+    batch_text_parser.add_argument(
+        "--pattern",
+        default=DEFAULT_GLOB_PATTERN,
+        help=f"Glob pattern (default: {DEFAULT_GLOB_PATTERN})",
+    )
     _add_workers_argument(batch_text_parser)
 
     batch_print_parser = batch_subparsers.add_parser("print", help="Print all matching PDFs in a folder")
     batch_print_parser.add_argument("--input-dir", required=True, help="Input folder path")
-    batch_print_parser.add_argument("--pattern", default="*.pdf", help="Glob pattern (default: *.pdf)")
+    batch_print_parser.add_argument(
+        "--pattern",
+        default=DEFAULT_GLOB_PATTERN,
+        help=f"Glob pattern (default: {DEFAULT_GLOB_PATTERN})",
+    )
     _add_workers_argument(batch_print_parser)
 
     batch_word_parser = batch_subparsers.add_parser(
@@ -826,8 +1121,8 @@ def build_parser() -> argparse.ArgumentParser:
     batch_word_parser.add_argument("--output-dir", required=True, help="Output folder path")
     batch_word_parser.add_argument(
         "--pattern",
-        default="*.doc*",
-        help="Glob pattern for Word files (default: *.doc*)",
+        default=DEFAULT_WORD_PATTERN,
+        help=f"Glob pattern for Word files (default: {DEFAULT_WORD_PATTERN})",
     )
     _add_workers_argument(batch_word_parser)
 
@@ -838,8 +1133,15 @@ def build_parser() -> argparse.ArgumentParser:
     batch_excel_parser.add_argument("--output-dir", required=True, help="Output folder path")
     batch_excel_parser.add_argument(
         "--pattern",
-        default="*.xls*",
-        help="Glob pattern for Excel files (default: *.xls*)",
+        default=DEFAULT_EXCEL_PATTERN,
+        help=f"Glob pattern for Excel files (default: {DEFAULT_EXCEL_PATTERN})",
+    )
+    batch_excel_parser.add_argument(
+        "--paper-size",
+        type=str,
+        default=DEFAULT_EXCEL_PAPER_SIZE,
+        choices=list(EXCEL_PAPER_SIZES.keys()),
+        help=f"Paper size for PDF export (default: {DEFAULT_EXCEL_PAPER_SIZE})",
     )
     _add_workers_argument(batch_excel_parser)
 
@@ -883,6 +1185,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        logger.info(f"Starting command: {args.command}")
         if args.command == "edit":
             input_file = _validate_existing_file(args.input)
             output_file = _validate_output_path(args.output)
@@ -1018,7 +1321,13 @@ def main() -> int:
                 output_dir = _validate_output_dir(args.output_dir)
                 if args.workers > 1:
                     print("Note: Excel conversion is forced to single-worker mode for COM stability.")
-                written_files = batch_excel_to_pdf(input_dir, output_dir, args.pattern, args.workers)
+                written_files = batch_excel_to_pdf(
+                    input_dir,
+                    output_dir,
+                    args.pattern,
+                    args.workers,
+                    paper_size=args.paper_size,
+                )
                 print(f"Created {len(written_files)} files in: {output_dir}")
 
         elif args.command == "dnd":
@@ -1055,7 +1364,7 @@ def main() -> int:
             elif args.dnd_command == "excel-to-pdf":
                 input_file = _validate_existing_file(args.input)
                 output_file = _validate_output_path(args.output)
-                excel_to_pdf(input_file, output_file)
+                excel_to_pdf(input_file, output_file, DEFAULT_EXCEL_PAPER_SIZE)
 
         print("Done.")
         return 0

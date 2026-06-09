@@ -1,31 +1,120 @@
 # PDF Tool (Python)
 
-This project provides a command-line app to:
+This project provides a command-line app and desktop GUI to:
 
-- edit PDFs (rotate pages, add text watermark)
-- split PDFs
-- combine multiple PDFs
-- convert images to PDF
-- convert PDF to text
-- print PDFs
-- batch process folders of PDFs
-- batch convert Microsoft Word and Excel files to PDF (Windows)
+- Edit PDFs (rotate pages, add text watermark)
+- Split PDFs into individual pages
+- Combine multiple PDFs
+- Convert images to PDF
+- Convert PDF to text
+- Print PDFs
+- Batch process folders of PDFs
+- Batch convert Microsoft Word and Excel files to PDF (Windows only)
 
 It also includes a desktop GUI built with PySide6.
 
 ## 1. Setup
 
+### Prerequisites
+
+- Python 3.9 or higher
+- For Word/Excel conversion: Microsoft Office (Windows only)
+
+### Installation
+
 ```powershell
+# Create virtual environment
 py -m venv .venv
+
+# Activate virtual environment
 .\.venv\Scripts\Activate.ps1
+
+# Upgrade pip
 py -m pip install --upgrade pip
+
+# Install dependencies
 py -m pip install -r requirements.txt
 ```
 
-## 2. Usage
+### Optional: Development Setup
 
 ```powershell
+# Install development dependencies
+py -m pip install pytest pytest-cov black ruff mypy
+
+# Run tests (when available)
+pytest
+
+# Format code
+black .
+
+# Lint code
+ruff check .
+
+# Type checking
+mypy pdf_tool.py pdf_gui.py
+```
+
+## 2. Command-Line Usage
+
+### Basic Commands
+
+```powershell
+# Show help
 py pdf_tool.py --help
+
+# Rotate PDF pages
+py pdf_tool.py edit rotate -i input.pdf -o output.pdf -a 90
+
+# Add watermark
+py pdf_tool.py edit watermark -i input.pdf -o output.pdf -t "CONFIDENTIAL" --opacity 0.3
+
+# Split PDF into pages
+py pdf_tool.py split -i input.pdf -d output_folder
+
+# Combine multiple PDFs
+py pdf_tool.py combine -i file1.pdf file2.pdf file3.pdf -o combined.pdf
+
+# Extract text from PDF
+py pdf_tool.py convert pdf-to-text -i input.pdf -o output.txt
+
+# Print PDF
+py pdf_tool.py print -i input.pdf
+```
+
+### Batch Operations
+
+```powershell
+# Batch rotate all PDFs in a folder
+py pdf_tool.py batch rotate --input-dir ./input --output-dir ./output --angle 90
+
+# Batch watermark with custom opacity
+py pdf_tool.py batch watermark --input-dir ./input --output-dir ./output --text "DRAFT" --opacity 0.2
+
+# Batch convert Word to PDF
+py pdf_tool.py batch word-to-pdf --input-dir ./docs --output-dir ./pdfs
+
+# Batch extract text from all PDFs
+py pdf_tool.py batch pdf-to-text --input-dir ./pdfs --output-dir ./text
+
+# Batch with custom file pattern
+py pdf_tool.py batch rotate --input-dir ./input --output-dir ./output --angle 180 --pattern "**/*.pdf"
+```
+
+### Drag-and-Drop Commands
+
+```powershell
+# Combine dropped PDFs
+py pdf_tool.py dnd combine output.pdf file1.pdf file2.pdf
+
+# Convert dropped images to PDF
+py pdf_tool.py dnd images-to-pdf output.pdf image1.png image2.jpg
+
+# Split dropped PDF
+py pdf_tool.py dnd split input.pdf output_folder
+
+# Convert dropped Word file
+py pdf_tool.py dnd word-to-pdf input.docx output.pdf
 ```
 
 ## 3. Run GUI (PySide6)
@@ -34,185 +123,101 @@ py pdf_tool.py --help
 py pdf_gui.py
 ```
 
-The GUI has tabs for Edit, Split, Combine, Convert, Batch, and Print.
+The GUI has tabs for:
 
-The GUI also supports:
+- **Edit**: Rotate, watermark, delete pages, reorder pages
+- **Split**: Split PDF into individual pages
+- **Combine**: Merge multiple PDFs
+- **Convert**: Images to PDF, PDF to text
+- **Batch**: Process entire folders
+- **Print**: Print PDFs to default printer
 
-- drag-and-drop for most file and folder path fields
-- a Batch tab for folder processing
-- configurable worker threads for batch tasks
-- live batch status, progress bar, and log output
-- continue-on-error toggle for Office batch conversions
+### GUI Features
 
-Word/Excel conversion notes:
+- **Drag-and-drop**: Drop files/folders into most path fields
+- **Progress tracking**: Live progress bar and status for batch operations
+- **Error handling**: Continue-on-error option for Office conversions
+- **Multi-threading**: Configurable worker threads for batch tasks
 
-- currently Windows-only
-- requires Microsoft Word/Excel to be installed
+## 4. Configuration & Defaults
 
-### Edit
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Watermark opacity | 0.25 | Range: 0.0 to 1.0 |
+| Watermark font size | 48 | Range: 8 to 300 |
+| Batch workers | 4 | Range: 1 to 64 |
+| Glob pattern | `*.pdf` | File matching pattern |
+| Word pattern | `*.doc*` | Word file matching |
+| Excel pattern | `*.xls*` | Excel file matching |
 
-Rotate all pages by 90 degrees:
+## 5. Troubleshooting
 
-```powershell
-py pdf_tool.py edit rotate -i .\input.pdf -o .\rotated.pdf -a 90
-```
+### Common Issues
 
-Rotate only selected pages:
+**"File not found" errors**
+- Ensure file paths are absolute or relative to current directory
+- Check file permissions
+- Verify the file exists before running the command
 
-```powershell
-py pdf_tool.py edit rotate -i .\input.pdf -o .\rotated.pdf -a 180 -p "1,3,5-7"
-```
+**"Rotation angle must be a multiple of 90"**
+- Valid angles: -360, -270, -180, -90, 0, 90, 180, 270, 360
 
-Add watermark text:
+**"Opacity must be between 0.0 and 1.0"**
+- Valid range: 0.0 (transparent) to 1.0 (opaque)
+- Recommended: 0.1 to 0.3 for watermarks
 
-```powershell
-py pdf_tool.py edit watermark -i .\input.pdf -o .\watermarked.pdf -t "CONFIDENTIAL" --opacity 0.2 --font-size 56
-```
+**Word/Excel conversion fails**
+- Ensure Microsoft Office is installed
+- Run with `--workers 1` for better stability
+- Close Office applications before batch conversion
+- Check for locked/temp files (starting with `~$`)
 
-Delete pages 2 and 5-7:
+**"No files matched pattern"**
+- Verify the glob pattern matches your files
+- Try `--pattern "*.PDF"` for uppercase extensions
+- Use `--pattern "**/*.pdf"` for recursive search
 
-```powershell
-py pdf_tool.py edit delete-pages -i .\input.pdf -o .\deleted.pdf -p "2,5-7"
-```
+**COM/Office errors on Windows**
+- Restart the application
+- Reduce batch size or use single-worker mode
+- Ensure Office is properly activated
 
-Reorder all pages (example for a 3-page PDF):
+### Logging
 
-```powershell
-py pdf_tool.py edit reorder -i .\input.pdf -o .\reordered.pdf --order "3,1,2"
-```
-
-### Split
-
-Split all pages into separate files:
-
-```powershell
-py pdf_tool.py split -i .\input.pdf -d .\split_output
-```
-
-Split only selected pages with custom prefix:
-
-```powershell
-py pdf_tool.py split -i .\input.pdf -d .\split_output -p "1,3,5-6" --prefix "chapter"
-```
-
-### Combine
-
-```powershell
-py pdf_tool.py combine -i .\first.pdf .\second.pdf .\third.pdf -o .\merged.pdf
-```
-
-Drag-and-drop friendly positional form (drop files directly after command):
+The application logs to console with timestamps. For detailed debugging:
 
 ```powershell
-py pdf_tool.py dnd combine .\merged.pdf .\first.pdf .\second.pdf .\third.pdf
+# Set logging level to DEBUG (modify source code)
+# In pdf_tool.py, change: logging.basicConfig(level=logging.DEBUG)
 ```
 
-### Convert
+### Performance Tips
 
-Images to PDF:
+- Use multiple workers (`--workers 8`) for CPU-bound operations
+- Use single worker (`--workers 1`) for Office conversions
+- Process large batches in chunks of 20-50 files
+- Use SSD storage for better I/O performance
 
-```powershell
-py pdf_tool.py convert images-to-pdf -i .\img1.png .\img2.jpg -o .\images.pdf
-```
+## 6. Page Range Syntax
 
-PDF to text:
+Page ranges use 1-based indexing:
 
-```powershell
-py pdf_tool.py convert pdf-to-text -i .\input.pdf -o .\output.txt
-```
+- Single page: `1`, `5`, `10`
+- Multiple pages: `1,3,5,7`
+- Range: `1-10`, `5-15`
+- Combined: `1,3,5-7,10,12-15`
 
-Drag-and-drop friendly positional form:
+## 7. Security Notes
 
-```powershell
-py pdf_tool.py dnd pdf-to-text .\input.pdf .\output.txt
-```
+- Paths are resolved to absolute paths to prevent traversal attacks
+- Office conversions run in isolated COM contexts
+- Temporary files are cleaned up automatically
+- No data is sent to external services
 
-### Print
+## 8. License
 
-Print on default printer:
+[Add your license here]
 
-```powershell
-py pdf_tool.py print -i .\input.pdf
-```
+## 9. Contributing
 
-Drag-and-drop friendly positional form:
-
-```powershell
-py pdf_tool.py dnd print .\input.pdf
-```
-
-### Batch Folder Processing
-
-You can parallelize batch work with `--workers`.
-
-- `--workers 0` means auto-select thread count (default)
-- `--workers 1` forces single-threaded execution
-- `--workers 4` (or higher) runs multiple files in parallel
-
-Office note:
-
-- Word/Excel to PDF batch conversion is forced to single-worker mode for COM stability.
-- Word/Excel batch conversion automatically skips temporary Office lock files (for example `~$*.docx`).
-
-Rotate all PDFs in a folder:
-
-```powershell
-py pdf_tool.py batch rotate --input-dir .\in --output-dir .\out --angle 90 --pattern "*.pdf" --workers 4
-```
-
-Watermark all PDFs in a folder:
-
-```powershell
-py pdf_tool.py batch watermark --input-dir .\in --output-dir .\out --text "CONFIDENTIAL" --opacity 0.2 --font-size 56 --workers 4
-```
-
-Delete pages in all PDFs in a folder:
-
-```powershell
-py pdf_tool.py batch delete-pages --input-dir .\in --output-dir .\out --pages "2,5-7" --workers 4
-```
-
-Reorder pages in all PDFs in a folder:
-
-```powershell
-py pdf_tool.py batch reorder --input-dir .\in --output-dir .\out --order "3,1,2" --workers 4
-```
-
-Split all PDFs in a folder:
-
-```powershell
-py pdf_tool.py batch split --input-dir .\in --output-dir .\out --pattern "*.pdf" --workers 4
-```
-
-Extract text from all PDFs in a folder:
-
-```powershell
-py pdf_tool.py batch pdf-to-text --input-dir .\in --output-dir .\out --workers 4
-```
-
-Print all PDFs in a folder:
-
-```powershell
-py pdf_tool.py batch print --input-dir .\in --workers 4
-```
-
-Batch convert Word files to PDF:
-
-```powershell
-py pdf_tool.py batch word-to-pdf --input-dir .\word_in --output-dir .\pdf_out --pattern "*.doc*" --workers 2
-```
-
-Batch convert Excel files to PDF:
-
-```powershell
-py pdf_tool.py batch excel-to-pdf --input-dir .\excel_in --output-dir .\pdf_out --pattern "*.xls*" --workers 2
-```
-
-Drag-and-drop friendly positional commands for Office conversion:
-
-```powershell
-py pdf_tool.py dnd word-to-pdf .\input.docx .\output.pdf
-py pdf_tool.py dnd excel-to-pdf .\input.xlsx .\output.pdf
-```
-
-On Windows, the command uses the default application associated with PDF files.
+[Add contribution guidelines if applicable]

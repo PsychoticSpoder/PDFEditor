@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -37,8 +39,16 @@ from pdf_tool import (
     batch_watermark_pdfs,
     batch_word_to_pdf,
     combine_pdfs,
+    DEFAULT_EXCEL_PAPER_SIZE,
+    DEFAULT_GLOB_PATTERN,
+    DEFAULT_WATERMARK_FONT_SIZE,
+    DEFAULT_WATERMARK_OPACITY,
+    DEFAULT_WORKERS,
     delete_page_range,
+    EXCEL_PAPER_SIZES,
     images_to_pdf,
+    MAX_WORKERS,
+    MIN_WORKERS,
     pdf_to_text,
     print_pdf,
     reorder_pages,
@@ -46,6 +56,13 @@ from pdf_tool import (
     split_pdf,
     watermark_pdf,
 )
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class DropLineEdit(QLineEdit):
@@ -223,6 +240,7 @@ class BatchWorker(QObject):
         font_size: int,
         prefix: str | None,
         continue_on_error: bool,
+        paper_size: str | None = None,
     ) -> None:
         super().__init__()
         self.action = action
@@ -238,6 +256,7 @@ class BatchWorker(QObject):
         self.font_size = font_size
         self.prefix = prefix
         self.continue_on_error = continue_on_error
+        self.paper_size = paper_size
 
     def _matching_count(self) -> int:
         files = [path for path in self.input_dir.glob(self.pattern) if path.is_file()]
@@ -384,6 +403,7 @@ class BatchWorker(QObject):
                     raise ValueError("Output folder is required.")
 
                 errors: list[str] = []
+                paper_size = self.paper_size or DEFAULT_EXCEL_PAPER_SIZE
 
                 def on_progress(index: int, count: int, input_file: Path, state: str) -> None:
                     self.progress.emit(index, count, f"Excel {index}/{count}: {input_file.name}")
@@ -402,6 +422,7 @@ class BatchWorker(QObject):
                     on_progress,
                     self.continue_on_error,
                     errors,
+                    paper_size,
                 )
 
                 if errors:
@@ -501,11 +522,11 @@ class MainWindow(QMainWindow):
         self.watermark_text = QLineEdit()
         self.watermark_text.setPlaceholderText("CONFIDENTIAL")
 
-        self.watermark_opacity = QLineEdit("0.25")
+        self.watermark_opacity = QLineEdit(str(DEFAULT_WATERMARK_OPACITY))
         self.watermark_size = QSpinBox()
         self.watermark_size.setMinimum(8)
         self.watermark_size.setMaximum(300)
-        self.watermark_size.setValue(48)
+        self.watermark_size.setValue(DEFAULT_WATERMARK_FONT_SIZE)
 
         watermark_button = QPushButton("Run Watermark")
         watermark_button.clicked.connect(self.run_watermark)
@@ -655,6 +676,7 @@ class MainWindow(QMainWindow):
         batch_box = QGroupBox("Batch PDF Operations")
         form = QFormLayout(batch_box)
 
+        # Action selector
         self.batch_action = QComboBox()
         self.batch_action.addItem("Rotate", "rotate")
         self.batch_action.addItem("Watermark", "watermark")
@@ -666,46 +688,123 @@ class MainWindow(QMainWindow):
         self.batch_action.addItem("Excel to PDF", "excel-to-pdf")
         self.batch_action.addItem("Print", "print")
 
+        # Common fields (always shown)
         in_row, self.batch_input_dir, _ = _directory_row("Input Folder", "Select Folder")
         out_row, self.batch_output_dir, _ = _directory_row("Output Folder", "Select Folder")
 
-        self.batch_pattern = QLineEdit("*.pdf")
+        self.batch_pattern = QLineEdit(DEFAULT_GLOB_PATTERN)
         self.batch_pattern.setToolTip("Glob pattern, supports forms like *.pdf or **/*.pdf")
 
         self.batch_workers = QSpinBox()
-        self.batch_workers.setMinimum(1)
-        self.batch_workers.setMaximum(64)
-        self.batch_workers.setValue(4)
+        self.batch_workers.setMinimum(MIN_WORKERS)
+        self.batch_workers.setMaximum(MAX_WORKERS)
+        self.batch_workers.setValue(DEFAULT_WORKERS)
         self.batch_workers.setToolTip("Number of worker threads for batch processing")
 
         self.batch_continue_on_error = QCheckBox("Continue on error (Office conversions)")
         self.batch_continue_on_error.setChecked(True)
 
+        # Action-specific fields using QStackedWidget
+        self.batch_action_stacked = QStackedWidget()
+        
+        # Create empty/default widget
+        empty_widget = QWidget()
+        empty_layout = QVBoxLayout(empty_widget)
+        empty_layout.addWidget(QLabel("Select an action to see options"))
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_action_stacked.addWidget(empty_widget)
+        
+        # Rotate widget
+        rotate_widget = QWidget()
+        rotate_layout = QFormLayout(rotate_widget)
         self.batch_angle = QSpinBox()
         self.batch_angle.setMinimum(-360)
         self.batch_angle.setMaximum(360)
         self.batch_angle.setSingleStep(90)
         self.batch_angle.setValue(90)
-
-        self.batch_pages = QLineEdit()
-        self.batch_pages.setPlaceholderText("Optional for rotate/split, required for delete")
-
-        self.batch_order = QLineEdit()
-        self.batch_order.setPlaceholderText("Required for reorder, e.g. 3,1,2")
-
+        self.batch_pages_rotate = QLineEdit()
+        self.batch_pages_rotate.setPlaceholderText("Optional: pages to rotate, e.g. 1,3,5-7")
+        rotate_layout.addRow("Angle", self.batch_angle)
+        rotate_layout.addRow("Pages", self.batch_pages_rotate)
+        self.batch_action_stacked.addWidget(rotate_widget)
+        
+        # Watermark widget
+        watermark_widget = QWidget()
+        watermark_layout = QFormLayout(watermark_widget)
         self.batch_text = QLineEdit()
-        self.batch_text.setPlaceholderText("Required for watermark")
-
-        self.batch_opacity = QLineEdit("0.25")
-
+        self.batch_text.setPlaceholderText("Watermark text")
+        self.batch_opacity = QLineEdit(str(DEFAULT_WATERMARK_OPACITY))
         self.batch_font_size = QSpinBox()
         self.batch_font_size.setMinimum(8)
         self.batch_font_size.setMaximum(300)
-        self.batch_font_size.setValue(48)
-
+        self.batch_font_size.setValue(DEFAULT_WATERMARK_FONT_SIZE)
+        watermark_layout.addRow("Watermark Text", self.batch_text)
+        watermark_layout.addRow("Opacity", self.batch_opacity)
+        watermark_layout.addRow("Font Size", self.batch_font_size)
+        self.batch_action_stacked.addWidget(watermark_widget)
+        
+        # Delete pages widget
+        delete_widget = QWidget()
+        delete_layout = QFormLayout(delete_widget)
+        self.batch_pages_delete = QLineEdit()
+        self.batch_pages_delete.setPlaceholderText("Required: pages to delete, e.g. 2,4,6-8")
+        delete_layout.addRow("Pages", self.batch_pages_delete)
+        self.batch_action_stacked.addWidget(delete_widget)
+        
+        # Reorder widget
+        reorder_widget = QWidget()
+        reorder_layout = QFormLayout(reorder_widget)
+        self.batch_order = QLineEdit()
+        self.batch_order.setPlaceholderText("Required: full page order, e.g. 3,1,2")
+        reorder_layout.addRow("Order", self.batch_order)
+        self.batch_action_stacked.addWidget(reorder_widget)
+        
+        # Split widget
+        split_widget = QWidget()
+        split_layout = QFormLayout(split_widget)
+        self.batch_pages_split = QLineEdit()
+        self.batch_pages_split.setPlaceholderText("Optional: pages to extract, e.g. 1,3,5-7")
         self.batch_prefix = QLineEdit()
-        self.batch_prefix.setPlaceholderText("Optional split filename prefix")
+        self.batch_prefix.setPlaceholderText("Optional filename prefix")
+        split_layout.addRow("Pages", self.batch_pages_split)
+        split_layout.addRow("Split Prefix", self.batch_prefix)
+        self.batch_action_stacked.addWidget(split_widget)
+        
+        # PDF to Text widget (no extra fields)
+        text_widget = QWidget()
+        text_layout = QVBoxLayout(text_widget)
+        text_layout.addWidget(QLabel("No additional options"))
+        text_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_action_stacked.addWidget(text_widget)
+        
+        # Word to PDF widget (no extra fields)
+        word_widget = QWidget()
+        word_layout = QVBoxLayout(word_widget)
+        word_layout.addWidget(QLabel("No additional options"))
+        word_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_action_stacked.addWidget(word_widget)
+        
+        # Excel to PDF widget (with paper size option)
+        excel_widget = QWidget()
+        excel_layout = QFormLayout(excel_widget)
+        self.batch_excel_paper_size = QComboBox()
+        for paper_name in EXCEL_PAPER_SIZES.keys():
+            self.batch_excel_paper_size.addItem(paper_name, paper_name)
+        # Set default to A4
+        default_index = self.batch_excel_paper_size.findText(DEFAULT_EXCEL_PAPER_SIZE)
+        if default_index >= 0:
+            self.batch_excel_paper_size.setCurrentIndex(default_index)
+        excel_layout.addRow("Paper Size", self.batch_excel_paper_size)
+        self.batch_action_stacked.addWidget(excel_widget)
+        
+        # Print widget (no extra fields)
+        print_widget = QWidget()
+        print_layout = QVBoxLayout(print_widget)
+        print_layout.addWidget(QLabel("No additional options"))
+        print_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.batch_action_stacked.addWidget(print_widget)
 
+        # Run button and status
         self.run_batch_button = QPushButton("Run Batch Operation")
         self.run_batch_button.clicked.connect(self.run_batch_operation)
 
@@ -719,21 +818,17 @@ class MainWindow(QMainWindow):
         self.batch_log.setPlaceholderText("Batch progress and errors will appear here.")
         self.batch_log.document().setMaximumBlockCount(2000)
 
-        self.batch_action.currentIndexChanged.connect(self._toggle_batch_fields)
+        # Connect action change
+        self.batch_action.currentIndexChanged.connect(self._on_batch_action_changed)
 
+        # Add to form
         form.addRow("Action", self.batch_action)
         form.addRow(in_row)
         form.addRow(out_row)
         form.addRow("Pattern", self.batch_pattern)
         form.addRow("Workers", self.batch_workers)
         form.addRow(self.batch_continue_on_error)
-        form.addRow("Angle", self.batch_angle)
-        form.addRow("Pages", self.batch_pages)
-        form.addRow("Order", self.batch_order)
-        form.addRow("Watermark Text", self.batch_text)
-        form.addRow("Opacity", self.batch_opacity)
-        form.addRow("Font Size", self.batch_font_size)
-        form.addRow("Split Prefix", self.batch_prefix)
+        form.addRow("Options", self.batch_action_stacked)
         form.addRow(self.run_batch_button)
         form.addRow("Status", self.batch_status)
         form.addRow("Progress", self.batch_progress)
@@ -742,11 +837,42 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.batch_log)
         layout.addStretch(1)
 
-        self._toggle_batch_fields()
+        # Initialize field visibility
+        self._on_batch_action_changed()
         return tab
 
-    def _toggle_batch_fields(self) -> None:
+    def _on_batch_action_changed(self) -> None:
+        """Update displayed fields based on selected batch action."""
         action = self.batch_action.currentData()
+        
+        # Map actions to stacked widget indices (0=empty, 1=rotate, 2=watermark, etc.)
+        action_to_index = {
+            "rotate": 1,
+            "watermark": 2,
+            "delete-pages": 3,
+            "reorder": 4,
+            "split": 5,
+            "pdf-to-text": 6,
+            "word-to-pdf": 7,
+            "excel-to-pdf": 8,
+            "print": 9,
+        }
+        
+        index = action_to_index.get(action, 0)
+        self.batch_action_stacked.setCurrentIndex(index)
+        
+        # Update pattern based on action
+        if action == "word-to-pdf":
+            self.batch_pattern.setText("*.docx")
+            self.batch_pattern.setToolTip("Glob pattern for Word files")
+        elif action == "excel-to-pdf":
+            self.batch_pattern.setText("*.xlsx")
+            self.batch_pattern.setToolTip("Glob pattern for Excel files")
+        else:
+            self.batch_pattern.setText(DEFAULT_GLOB_PATTERN)
+            self.batch_pattern.setToolTip("Glob pattern, supports forms like *.pdf or **/*.pdf")
+        
+        # Update output directory requirement
         needs_output = action in {
             "rotate",
             "watermark",
@@ -759,18 +885,11 @@ class MainWindow(QMainWindow):
         }
         self.batch_output_dir.setEnabled(needs_output)
 
+        # Handle Office-specific settings
         office_action = action in {"word-to-pdf", "excel-to-pdf"}
         if office_action and self.batch_workers.value() != 1:
             self.batch_workers.setValue(1)
         self.batch_workers.setEnabled(not office_action)
-
-        self.batch_angle.setEnabled(action == "rotate")
-        self.batch_pages.setEnabled(action in {"rotate", "delete-pages", "split"})
-        self.batch_order.setEnabled(action == "reorder")
-        self.batch_text.setEnabled(action == "watermark")
-        self.batch_opacity.setEnabled(action == "watermark")
-        self.batch_font_size.setEnabled(action == "watermark")
-        self.batch_prefix.setEnabled(action == "split")
         self.batch_continue_on_error.setEnabled(office_action)
 
     def _show_success(self, message: str) -> None:
@@ -784,9 +903,12 @@ class MainWindow(QMainWindow):
             input_file = _existing_file_from_input(self.rotate_input.text(), "Input PDF")
             output_file = _output_file_from_input(self.rotate_output.text(), "Output PDF")
             pages = self.rotate_pages.text().strip() or None
+            logger.info(f"Starting rotation: {input_file} -> {output_file}")
             rotate_pdf(input_file, output_file, self.rotate_angle.value(), pages)
+            logger.info("Rotation completed successfully")
             self._show_success("Rotation complete.")
         except Exception as exc:  # noqa: BLE001
+            logger.error(f"Rotation failed: {exc}", exc_info=True)
             self._show_error(exc)
 
     def run_watermark(self) -> None:
@@ -799,6 +921,7 @@ class MainWindow(QMainWindow):
             opacity = float(self.watermark_opacity.text())
             if opacity < 0.0 or opacity > 1.0:
                 raise ValueError("Opacity must be between 0.0 and 1.0.")
+            logger.info(f"Starting watermark: {input_file} -> {output_file}, text='{text}'")
             watermark_pdf(
                 input_file,
                 output_file,
@@ -806,8 +929,10 @@ class MainWindow(QMainWindow):
                 opacity,
                 self.watermark_size.value(),
             )
+            logger.info("Watermark completed successfully")
             self._show_success("Watermark complete.")
         except Exception as exc:  # noqa: BLE001
+            logger.error(f"Watermark failed: {exc}", exc_info=True)
             self._show_error(exc)
 
     def run_combine(self) -> None:
@@ -892,14 +1017,17 @@ class MainWindow(QMainWindow):
 
     def run_batch_operation(self) -> None:
         try:
-            if self.batch_thread is not None:
-                raise ValueError("A batch operation is already running.")
+            if self.batch_thread is not None and self.batch_thread.isRunning():
+                raise ValueError("A batch operation is already running. Please wait for it to complete.")
 
             action = str(self.batch_action.currentData())
             input_dir = _existing_dir_from_input(self.batch_input_dir.text(), "Input Folder")
             pattern = self.batch_pattern.text().strip() or "*.pdf"
             workers = self.batch_workers.value()
 
+            logger.info(f"Starting batch operation: {action} in {input_dir}")
+
+            # Validate output directory requirement before starting
             output_dir: Path | None = None
             if action in {
                 "rotate",
@@ -913,11 +1041,43 @@ class MainWindow(QMainWindow):
             }:
                 output_dir = _output_dir_from_input(self.batch_output_dir.text(), "Output Folder")
 
-            pages = self.batch_pages.text().strip() or None
-            order = self.batch_order.text().strip() or None
-            text = self.batch_text.text().strip() or None
-            prefix = self.batch_prefix.text().strip() or None
-            opacity = float(self.batch_opacity.text())
+            # Get action-specific parameters based on which widget is shown
+            pages: str | None = None
+            order: str | None = None
+            text: str | None = None
+            prefix: str | None = None
+            opacity: float = DEFAULT_WATERMARK_OPACITY
+            paper_size: str | None = None
+
+            if action == "rotate":
+                pages = self.batch_pages_rotate.text().strip() or None
+            elif action == "watermark":
+                text = self.batch_text.text().strip() or None
+                opacity = float(self.batch_opacity.text())
+            elif action == "delete-pages":
+                pages = self.batch_pages_delete.text().strip() or None
+            elif action == "reorder":
+                order = self.batch_order.text().strip() or None
+            elif action == "split":
+                pages = self.batch_pages_split.text().strip() or None
+                prefix = self.batch_prefix.text().strip() or None
+            elif action == "excel-to-pdf":
+                paper_size = self.batch_excel_paper_size.currentText()
+
+            # Validate action-specific parameters before starting thread
+            if action == "watermark" and not text:
+                raise ValueError("Watermark text is required.")
+            if action == "watermark" and (opacity < 0.0 or opacity > 1.0):
+                raise ValueError("Opacity must be between 0.0 and 1.0.")
+            if action == "delete-pages" and not pages:
+                raise ValueError("Pages to delete are required.")
+            if action == "reorder" and not order:
+                raise ValueError("Page order is required.")
+            if action == "rotate":
+                # Validate angle for rotate
+                angle = self.batch_angle.value()
+                if angle % 90 != 0:
+                    raise ValueError("Rotation angle must be a multiple of 90.")
 
             self.batch_log.clear()
             self.batch_progress.setRange(0, 0)
@@ -939,6 +1099,7 @@ class MainWindow(QMainWindow):
                 self.batch_font_size.value(),
                 prefix,
                 self.batch_continue_on_error.isChecked(),
+                paper_size,
             )
 
             self.batch_thread = QThread(self)

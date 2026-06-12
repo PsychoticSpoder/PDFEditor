@@ -696,17 +696,58 @@ def excel_to_pdf(input_file: Path, output_file: Path, paper_size: str = DEFAULT_
         workbook = excel_app.Workbooks.Open(str(input_file))
         
         # Configure page setup for all worksheets
+        # Mimic what Excel does when you manually export to PDF
         for worksheet in workbook.Worksheets:
             page_setup = worksheet.PageSetup
-            # Fit all columns on one page wide (height can span multiple pages)
-            page_setup.FitToPagesWide = 1
-            page_setup.FitToPagesTall = False  # Allow multiple pages tall
-            # Set paper size
+            
+            try:
+                # Clear any existing print area to let Excel auto-detect
+                page_setup.PrintArea = ""
+                
+                # This is the KEY setting that Excel uses:
+                # Fit all columns on ONE page wide, allow natural height
+                page_setup.FitToPagesWide = 1
+                page_setup.FitToPagesTall = False  # Don't force height
+                
+                # Set Zoom to False so FitToPages takes control
+                page_setup.Zoom = False
+                
+                # Set orientation based on column count
+                used_range = worksheet.UsedRange
+                column_count = used_range.Columns.Count
+                
+                if column_count > 10:
+                    page_setup.Orientation = 1  # Landscape
+                else:
+                    page_setup.Orientation = 2  # Portrait
+                
+            except Exception:
+                # Fallback to safe defaults
+                page_setup.FitToPagesWide = 1
+                page_setup.FitToPagesTall = False
+                page_setup.Zoom = False
+            
+            # Use standard paper size (Excel's default)
             paper_size_code = EXCEL_PAPER_SIZES.get(paper_size, EXCEL_PAPER_SIZES["A4"])
             page_setup.PaperSize = paper_size_code
-            # Center on page
+            
+            # Standard margins
             page_setup.CenterHorizontally = True
             page_setup.CenterVertically = False
+            page_setup.LeftMargin = 0.5 * 72
+            page_setup.RightMargin = 0.5 * 72
+            page_setup.TopMargin = 0.75 * 72
+            page_setup.BottomMargin = 0.75 * 72
+            page_setup.HeaderMargin = 0.3 * 72
+            page_setup.FooterMargin = 0.3 * 72
+        
+        # Clear page breaks between worksheets to prevent blank pages
+        for i, worksheet in enumerate(workbook.Worksheets):
+            if i > 0:  # Skip first worksheet
+                try:
+                    worksheet.ResetAllPageBreaks()
+                except Exception:
+                    pass
         
         # Export to PDF
         workbook.ExportAsFixedFormat(0, str(output_file))
@@ -846,23 +887,69 @@ def batch_excel_to_pdf(
                 _emit_office_progress(progress_callback, index, total, input_file, "start")
 
                 workbook = None
+                temp_pdfs = []
                 try:
                     workbook = excel_app.Workbooks.Open(str(input_file), ReadOnly=True)
                     
-                    # Configure page setup for all worksheets
+                    # Export each worksheet separately to avoid page break issues
                     for worksheet in workbook.Worksheets:
-                        page_setup = worksheet.PageSetup
-                        page_setup.FitToPagesWide = 1
-                        page_setup.FitToPagesTall = False
-                        paper_size_code = EXCEL_PAPER_SIZES.get(paper_size, EXCEL_PAPER_SIZES["A4"])
-                        page_setup.PaperSize = paper_size_code
-                        page_setup.CenterHorizontally = True
-                        page_setup.CenterVertically = False
+                        try:
+                            # Create temp PDF for this worksheet
+                            temp_pdf = output_dir / f"_{worksheet.Name}.pdf"
+                            temp_pdfs.append(temp_pdf)
+                            
+                            # Configure page setup for this worksheet only
+                            page_setup = worksheet.PageSetup
+                            
+                            # Clear print area and use FitToPages
+                            page_setup.PrintArea = ""
+                            page_setup.FitToPagesWide = 1
+                            page_setup.FitToPagesTall = False
+                            page_setup.Zoom = False
+                            
+                            # Set orientation based on column count
+                            try:
+                                used_range = worksheet.UsedRange
+                                column_count = used_range.Columns.Count
+                                if column_count > 10:
+                                    page_setup.Orientation = 1  # Landscape
+                                else:
+                                    page_setup.Orientation = 2  # Portrait
+                            except Exception:
+                                page_setup.Orientation = 2  # Portrait
+                            
+                            # Set paper size
+                            paper_size_code = EXCEL_PAPER_SIZES.get(paper_size, EXCEL_PAPER_SIZES["A4"])
+                            page_setup.PaperSize = paper_size_code
+                            
+                            # Export this worksheet to PDF
+                            worksheet.ExportAsFixedFormat(0, str(temp_pdf))
+                            
+                        except Exception as ws_exc:
+                            logger.warning(f"Worksheet {worksheet.Name} export failed: {ws_exc}")
+                            # Continue with other worksheets
                     
-                    workbook.ExportAsFixedFormat(0, str(output_file))
-                    _ensure_pdf_output(output_file)
-                    written_files.append(output_file)
-                    _emit_office_progress(progress_callback, index, total, input_file, "ok")
+                    # Combine all worksheet PDFs into one file
+                    if temp_pdfs:
+                        if len(temp_pdfs) == 1:
+                            # Only one worksheet, just rename
+                            temp_pdfs[0].rename(output_file)
+                        else:
+                            # Multiple worksheets, combine them
+                            _combine_pdfs_in_order(temp_pdfs, output_file)
+                            # Clean up temp files
+                            for temp_pdf in temp_pdfs:
+                                try:
+                                    temp_pdf.unlink()
+                                except Exception:
+                                    pass
+                        
+                        _ensure_pdf_output(output_file)
+                        written_files.append(output_file)
+                        _emit_office_progress(progress_callback, index, total, input_file, "ok")
+                    else:
+                        raise RuntimeError("No worksheets were exported")
+                        
                 except Exception as exc:
                     message = f"{input_file.name}: {exc}"
                     error_list.append(message)
@@ -870,6 +957,14 @@ def batch_excel_to_pdf(
                     if not continue_on_error:
                         raise RuntimeError(message) from exc
                 finally:
+                    # Clean up any remaining temp files
+                    for temp_pdf in temp_pdfs:
+                        try:
+                            if temp_pdf.exists():
+                                temp_pdf.unlink()
+                        except Exception:
+                            pass
+                    
                     try:
                         if workbook is not None:
                             workbook.Close(False)
@@ -888,6 +983,24 @@ def batch_excel_to_pdf(
                     pass
 
     return written_files
+
+
+def _combine_pdfs_in_order(input_pdfs: list[Path], output_file: Path) -> None:
+    """Combine multiple PDF files into one in the specified order."""
+    from pypdf import PdfWriter, PdfReader
+    
+    writer = PdfWriter()
+    
+    for pdf_path in input_pdfs:
+        try:
+            reader = PdfReader(str(pdf_path))
+            for page in reader.pages:
+                writer.add_page(page)
+        except Exception as e:
+            logger.warning(f"Failed to add {pdf_path} to combined PDF: {e}")
+    
+    with output_file.open("wb") as stream:
+        writer.write(stream)
 
 
 def build_parser() -> argparse.ArgumentParser:

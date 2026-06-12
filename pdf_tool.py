@@ -898,6 +898,12 @@ def batch_excel_to_pdf(
                             temp_pdf = output_dir / f"_{worksheet.Name}.pdf"
                             temp_pdfs.append(temp_pdf)
                             
+                            # CRITICAL: Remove manual page breaks first
+                            try:
+                                worksheet.ResetAllPageBreaks()
+                            except Exception:
+                                pass
+                            
                             # Configure page setup for this worksheet only
                             page_setup = worksheet.PageSetup
                             
@@ -986,7 +992,7 @@ def batch_excel_to_pdf(
 
 
 def _combine_pdfs_in_order(input_pdfs: list[Path], output_file: Path) -> None:
-    """Combine multiple PDF files into one in the specified order."""
+    """Combine multiple PDF files into one in the specified order, removing blank pages."""
     from pypdf import PdfWriter, PdfReader
     
     writer = PdfWriter()
@@ -995,12 +1001,57 @@ def _combine_pdfs_in_order(input_pdfs: list[Path], output_file: Path) -> None:
         try:
             reader = PdfReader(str(pdf_path))
             for page in reader.pages:
+                # Check if page has meaningful content before adding
+                if _is_blank_page(page):
+                    logger.info(f"Skipping blank page from {pdf_path.name}")
+                    continue
                 writer.add_page(page)
         except Exception as e:
             logger.warning(f"Failed to add {pdf_path} to combined PDF: {e}")
     
     with output_file.open("wb") as stream:
         writer.write(stream)
+
+
+def _is_blank_page(page) -> bool:
+    """
+    Check if a PDF page is mostly blank (only contains footer text).
+    
+    Returns True if the page appears to be blank except for standard footers.
+    """
+    try:
+        # Extract text from the page
+        text = page.extract_text()
+        
+        if not text:
+            return True
+        
+        # Remove whitespace and check character count
+        cleaned_text = text.strip()
+        
+        # If page has very little text, it's likely a footer-only page
+        if len(cleaned_text) < 30:
+            return True
+        
+        # Count non-whitespace characters
+        content_chars = sum(1 for c in cleaned_text if not c.isspace())
+        
+        # If less than 50 characters of actual content, likely blank
+        if content_chars < 50:
+            return True
+        
+        # Check line count - footer-only pages typically have 1-3 lines
+        lines = [line.strip() for line in cleaned_text.split('\n') if line.strip()]
+        if len(lines) <= 3:
+            # Check if lines look like footers (short, centered text)
+            if all(len(line) < 60 for line in lines):
+                return True
+        
+        return False
+        
+    except Exception:
+        # If we can't determine, assume it's not blank
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -147,7 +147,7 @@ The project is now an installable `pdfeditor` package:
 | G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | ◐      |
 | G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | ✅     |
 | G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | `[ ]`  |
-| G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | `[ ]`  |
+| G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | ◐     |
 
 ### 10.3 Phased plan
 
@@ -177,11 +177,12 @@ The project is now an installable `pdfeditor` package:
   - [ ] "Current document" state so operations reuse the loaded input.
   - [ ] Optional `PdfPreview` + `PagePickerDialog` (PySide6 `QtPdf`, no new dependency).
 
-- **Phase 4 — Tier 3: polish**
-  - [ ] `gui/theme.py` stylesheet (spacing, primary/secondary buttons, light/dark).
-  - [ ] `QScrollArea` wrapping + `QSettings` geometry persistence + HiDPI.
+- **Phase 4 — Tier 3: polish** — ◐ in progress
+  - [x] `gui/theme.py` stylesheet (spacing, group titles, hover states).
+  - [x] `QScrollArea` wrapping + `QSettings` window-geometry persistence.
+  - [x] Action-oriented button labels ("Rotate", "Merge PDFs", "Extract Text", ...).
   - [ ] Shortcuts/mnemonics, tab order, default buttons.
-  - [ ] Action-oriented labels, richer error guidance, "Open folder" affordances.
+  - [ ] Richer error guidance and "Open folder" affordances.
   - [ ] Recent-files list; menu bar + toolbar.
 
 ### 10.4 Key artifacts

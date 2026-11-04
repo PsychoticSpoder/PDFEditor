@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import QSettings, Qt, QThread
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QStatusBar,
@@ -56,6 +57,7 @@ from ..core import (
     split_pdf,
     watermark_pdf,
 )
+from .theme import apply_theme
 from .widgets import (
     OrderedFileList,
     PageRangeField,
@@ -73,12 +75,23 @@ from .workers import BatchWorker, SingleOpWorker
 logger = logging.getLogger(__name__)
 
 
+def _scrollable(widget: QWidget) -> QScrollArea:
+    """Wrap a tab's content so tall panels stay scrollable."""
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setWidget(widget)
+    return area
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("PDF Editor Tool")
         self.resize(960, 680)
+        self._settings = QSettings("pdfeditor", "pdfeditor")
+        saved_geometry = self._settings.value("window_geometry")
+        if saved_geometry is not None:
+            self.restoreGeometry(saved_geometry)
 
         central = QWidget()
         root_layout = QVBoxLayout(central)
@@ -96,12 +109,12 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(hint)
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_edit_tab(), "Edit")
-        tabs.addTab(self._build_split_tab(), "Split")
-        tabs.addTab(self._build_combine_tab(), "Combine")
-        tabs.addTab(self._build_convert_tab(), "Convert")
-        tabs.addTab(self._build_batch_tab(), "Batch")
-        tabs.addTab(self._build_print_tab(), "Print")
+        tabs.addTab(_scrollable(self._build_edit_tab()), "Edit")
+        tabs.addTab(_scrollable(self._build_split_tab()), "Split")
+        tabs.addTab(_scrollable(self._build_combine_tab()), "Combine")
+        tabs.addTab(_scrollable(self._build_convert_tab()), "Convert")
+        tabs.addTab(_scrollable(self._build_batch_tab()), "Batch")
+        tabs.addTab(_scrollable(self._build_print_tab()), "Print")
         root_layout.addWidget(tabs, stretch=1)
         self.tabs = tabs
 
@@ -141,6 +154,10 @@ class MainWindow(QMainWindow):
         if self.batch_worker is not None:
             self.batch_worker.request_cancel()
             self.status.showMessage("Cancelling…")
+
+    def closeEvent(self, event) -> None:
+        self._settings.setValue("window_geometry", self.saveGeometry())
+        super().closeEvent(event)
 
     def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
         """Keep a PageRangeField's page-count hint in sync with the input PDF."""
@@ -184,7 +201,7 @@ class MainWindow(QMainWindow):
 
         self.rotate_pages = PageRangeField("Optional pages to rotate, e.g. 1,3,5-7")
 
-        rotate_button = QPushButton("Run Rotate")
+        rotate_button = QPushButton("Rotate")
         rotate_button.clicked.connect(self.run_rotate)
 
         rotate_form.addRow(rotate_in_row)
@@ -220,7 +237,7 @@ class MainWindow(QMainWindow):
         self.watermark_size.setMaximum(300)
         self.watermark_size.setValue(DEFAULT_WATERMARK_FONT_SIZE)
 
-        watermark_button = QPushButton("Run Watermark")
+        watermark_button = QPushButton("Apply Watermark")
         watermark_button.clicked.connect(self.run_watermark)
 
         watermark_form.addRow(water_in_row)
@@ -243,7 +260,7 @@ class MainWindow(QMainWindow):
         )
         self.delete_pages = PageRangeField("Pages to delete, e.g. 2,4,6-8")
 
-        delete_button = QPushButton("Run Delete Pages")
+        delete_button = QPushButton("Delete Pages")
         delete_button.clicked.connect(self.run_delete_pages)
 
         delete_form.addRow(delete_in_row)
@@ -265,7 +282,7 @@ class MainWindow(QMainWindow):
         self.reorder_order = QLineEdit()
         self.reorder_order.setPlaceholderText("Required full order, e.g. 3,1,2")
 
-        reorder_button = QPushButton("Run Reorder")
+        reorder_button = QPushButton("Reorder")
         reorder_button.clicked.connect(self.run_reorder)
 
         reorder_form.addRow(reorder_in_row)
@@ -286,7 +303,7 @@ class MainWindow(QMainWindow):
             suffix="_extracted",
         )
         self.extract_pages = PageRangeField("Pages to extract, e.g. 1,3,5-7")
-        extract_button = QPushButton("Run Extract Pages")
+        extract_button = QPushButton("Extract to New PDF")
         extract_button.clicked.connect(self.run_extract_pages)
         extract_form.addRow(extract_in_row)
         extract_form.addRow(extract_out_row)
@@ -313,7 +330,7 @@ class MainWindow(QMainWindow):
         self.insert_at.setMaximum(100000)
         self.insert_at.setValue(1)
         self.insert_pages_field = PageRangeField("Optional pages from the inserted PDF")
-        insert_button = QPushButton("Run Insert Pages")
+        insert_button = QPushButton("Insert Pages")
         insert_button.clicked.connect(self.run_insert_pages)
         insert_form.addRow(insert_in_row)
         insert_form.addRow(insert_src_row)
@@ -377,7 +394,7 @@ class MainWindow(QMainWindow):
         self.split_prefix = QLineEdit()
         self.split_prefix.setPlaceholderText("Optional filename prefix")
 
-        split_button = QPushButton("Run Split")
+        split_button = QPushButton("Split into Pages")
         split_button.clicked.connect(self.run_split)
 
         form.addRow(split_in_row)
@@ -400,7 +417,7 @@ class MainWindow(QMainWindow):
             suffix="_combined",
         )
 
-        combine_button = QPushButton("Run Combine")
+        combine_button = QPushButton("Merge PDFs")
         combine_button.clicked.connect(self.run_combine)
 
         form.addRow("Input PDFs (in order)", self.combine_inputs)
@@ -423,7 +440,7 @@ class MainWindow(QMainWindow):
             filter_text="PDF Files (*.pdf)",
         )
 
-        images_button = QPushButton("Run Images to PDF")
+        images_button = QPushButton("Create PDF")
         images_button.clicked.connect(self.run_images_to_pdf)
 
         images_form.addRow("Input Images (in order)", self.images_inputs)
@@ -442,7 +459,7 @@ class MainWindow(QMainWindow):
             extension=".txt",
         )
 
-        text_button = QPushButton("Run PDF to Text")
+        text_button = QPushButton("Extract Text")
         text_button.clicked.connect(self.run_pdf_to_text)
 
         text_form.addRow(text_in_row)
@@ -459,7 +476,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(tab)
 
         in_row, self.print_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        print_button = QPushButton("Print on Default Printer")
+        print_button = QPushButton("Print")
         print_button.clicked.connect(self.run_print)
 
         form.addRow(in_row)
@@ -1091,6 +1108,7 @@ def main() -> int:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = MainWindow()
     window.show()
     return app.exec()

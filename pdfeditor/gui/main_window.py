@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QStatusBar,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -47,38 +46,31 @@ from ..core import (
     OFFICE_ACTIONS,
     OUTPUT_DIR_ACTIONS,
     combine_pdfs,
-    delete_page_range,
-    extract_pages,
-    get_metadata,
     images_to_pdf,
-    insert_pages,
     pdf_to_text,
     print_pdf,
-    reorder_pages,
-    rotate_pdf,
-    set_metadata,
-    split_pdf,
-    watermark_pdf,
 )
+from .organizer import PageOrganizerWidget
 from .preview import PdfPreview
 from .theme import apply_theme
 from .widgets import (
     DropLineEdit,
-    OperationPanel,
     OrderedFileList,
-    PageRangeField,
     _directory_row,
     _existing_dir_from_input,
     _existing_file_from_input,
     _file_row,
     _output_dir_from_input,
     _output_file_from_input,
-    _paths_from_input,
     _save_row,
 )
 from .workers import BatchWorker, SingleOpWorker
 
 logger = logging.getLogger(__name__)
+
+#: The "Single PDF Editing" panel is first in the sidebar and the only one that needs the
+#: shared "Current PDF" bar.
+_SINGLE_PDF_ROW = 0
 
 
 def _scrollable(widget: QWidget) -> QScrollArea:
@@ -114,9 +106,12 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color: #666666;")
         root_layout.addWidget(hint)
 
-        # Shared "current document" bar: open once and reuse across operations.
+        # The shared "current document" bar. It is only needed by the Single PDF Editing
+        # panel, so it hides itself whenever another panel is selected.
         self.setAcceptDrops(True)
-        doc_row = QHBoxLayout()
+        self.document_bar = QWidget()
+        doc_row = QHBoxLayout(self.document_bar)
+        doc_row.setContentsMargins(0, 0, 0, 0)
         self.current_document = DropLineEdit()
         self.current_document.setPlaceholderText("Drop or open a PDF to reuse across operations")
         self.current_document.textChanged.connect(self._on_current_document_changed)
@@ -131,7 +126,7 @@ class MainWindow(QMainWindow):
         doc_row.addWidget(open_button)
         doc_row.addWidget(self.recent_combo)
         doc_row.addWidget(self.preview)
-        root_layout.addLayout(doc_row)
+        root_layout.addWidget(self.document_bar)
         self._refresh_recent_combo()
 
         # Left action sidebar + a stack of operation panels (document-centric IA).
@@ -139,19 +134,22 @@ class MainWindow(QMainWindow):
         self.panel_list.setFixedWidth(170)
         self.panel_stack = QStackedWidget()
 
-        panels: list[tuple[str, QWidget]] = list(self._build_edit_panels())
-        panels.append(("Split", self._build_split_tab()))
-        panels.append(("Merge / Combine", self._build_combine_tab()))
-        panels.append(("Convert", self._build_convert_tab()))
-        panels.append(("Batch", self._build_batch_tab()))
-        panels.append(("Print", self._build_print_tab()))
+        # The organizer fills its page and scrolls internally, so it is not wrapped.
+        panels: list[tuple[str, QWidget, bool]] = [
+            ("Single PDF Editing", self._build_single_pdf_panel(), False),
+            ("Merge / Combine", self._build_combine_tab(), True),
+            ("Convert", self._build_convert_tab(), True),
+            ("Batch", self._build_batch_tab(), True),
+            ("Print", self._build_print_tab(), True),
+        ]
 
-        for label, panel in panels:
+        for label, panel, scrollable in panels:
             self.panel_list.addItem(label)
-            self.panel_stack.addWidget(_scrollable(panel))
+            self.panel_stack.addWidget(_scrollable(panel) if scrollable else panel)
 
-        self.panel_list.currentRowChanged.connect(self.panel_stack.setCurrentIndex)
-        self.panel_list.setCurrentRow(0)
+        self.panel_list.currentRowChanged.connect(self._on_panel_selected)
+        self.panel_list.setCurrentRow(_SINGLE_PDF_ROW)
+        self._on_panel_selected(_SINGLE_PDF_ROW)
 
         panels_row = QHBoxLayout()
         panels_row.addWidget(self.panel_list)
@@ -221,6 +219,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._settings.setValue("window_geometry", self.saveGeometry())
+        # Stop the organizer's render thread and drop its temporary working copy.
+        self.single_pdf_panel.close_document()
         super().closeEvent(event)
 
     def _recent_documents(self) -> list[str]:
@@ -248,62 +248,45 @@ class MainWindow(QMainWindow):
         if path:
             self.current_document.setText(str(path))
 
+    def _on_panel_selected(self, row: int) -> None:
+        """Show the chosen panel; the "Current PDF" bar only matters for the organizer."""
+        self.panel_stack.setCurrentIndex(row)
+        self.document_bar.setVisible(row == _SINGLE_PDF_ROW)
+
     def _choose_current_document(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
         if file_name:
             self.current_document.setText(file_name)
 
     def open_page_organizer(self) -> None:
-        """Open the page organizer (thumbnail grid) for the current document.
+        """Open the organizer in its own window, on the current document when there is one.
 
-        Reordering, rotating, deleting, extracting, inserting, splitting, watermarking
-        and metadata editing all happen in that one view against a temporary working
-        copy, which "Save As…" then writes out.
+        The Single PDF Editing panel embeds the very same widget; this is a convenience for
+        editing a different file without disturbing the panel.
         """
-        text = self.current_document.text().strip()
-        if not text:
-            self._choose_current_document()
-            text = self.current_document.text().strip()
-        if not text:
-            return
-        try:
-            path = _existing_file_from_input(text, "PDF")
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-            return
         from .organizer import PageOrganizerDialog
 
-        dialog = PageOrganizerDialog(str(path), self)
+        current = self.current_document.text().strip()
+        dialog = PageOrganizerDialog(current or None, self)
         dialog.exec()
         saved = dialog.saved_path()
         if saved:
             self.status.showMessage(f"Saved organized PDF: {saved}")
+
+    def _on_organized(self, path: str) -> None:
+        """Report an organizer Save As in the shared status bar."""
+        self.status.showMessage(f"Saved organized PDF: {path}")
 
     def _on_current_document_changed(self, text: str) -> None:
         path = text.strip()
         self.preview.set_document(path or None)
         if not path:
             return
-        # Reuse the current document across every single-file operation.
-        for edit in (
-            self.rotate_input,
-            self.watermark_input,
-            self.delete_input,
-            self.reorder_input,
-            self.extract_input,
-            self.insert_input,
-            self.meta_input,
-            self.split_input,
-            self.print_input,
-        ):
-            edit.setText(path)
-        for field in (
-            self.rotate_pages,
-            self.delete_pages,
-            self.extract_pages,
-            self.split_pages,
-        ):
-            field.set_document(path)
+        # The current document is what the single-PDF organizer edits; it also saves
+        # re-picking the file in the Print panel.
+        self.print_input.setText(path)
+        self.single_pdf_panel.file_edit.setText(path)
+        self.panel_list.setCurrentRow(_SINGLE_PDF_ROW)
         self._remember_document(path)
 
     def dragEnterEvent(self, event) -> None:
@@ -342,179 +325,15 @@ class MainWindow(QMainWindow):
         else:
             self.showMaximized()
 
-    def choose_order_and_reorder(self) -> None:
-        """Open the drag-to-reorder dialog, then write the reordered PDF.
+    def _build_single_pdf_panel(self) -> QWidget:
+        """The single panel for editing one PDF: the embedded page organizer.
 
-        The page order is never typed by hand: you drag the pages in the preview grid
-        and the resulting order is applied straight away, so one click on the panel
-        button both chooses the order and produces the output file.
+        Reorder, rotate, delete, export, insert, watermark and metadata all live in the
+        organizer's grid, so the separate per-operation panels are gone.
         """
-        try:
-            input_file = _existing_file_from_input(self.reorder_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.reorder_output.text(), "Output PDF")
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-            return
-        from .preview import PageReorderDialog
-
-        dialog = PageReorderDialog(str(input_file), self)
-        if not dialog.exec():
-            return
-        spec = dialog.order_spec()
-        if not spec:
-            return
-        self._run_async(
-            lambda: reorder_pages(input_file, output_file, spec),
-            "Reorder complete.",
-        )
-
-    def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
-        """Keep a PageRangeField's page-count hint in sync with the input PDF."""
-
-        def refresh(*_args: object) -> None:
-            text = input_edit.text().strip().split(";")[0].strip()
-            if not text:
-                return
-            try:
-                from pypdf import PdfReader
-
-                count = len(PdfReader(str(Path(text).expanduser())).pages)
-            except Exception:  # noqa: BLE001
-                return
-            field.set_page_count(count)
-
-        input_edit.textChanged.connect(refresh)
-
-    def _build_edit_panels(self) -> list[tuple[str, QWidget]]:
-        self.rotate_panel = OperationPanel("Rotate", "Rotate", source_suffix="_rotated")
-        self.rotate_input = self.rotate_panel.input_edit
-        self.rotate_output = self.rotate_panel.output_edit
-        self.rotate_angle = QSpinBox()
-        self.rotate_angle.setMinimum(-360)
-        self.rotate_angle.setMaximum(360)
-        self.rotate_angle.setSingleStep(90)
-        self.rotate_angle.setValue(90)
-        self.rotate_pages = self.rotate_panel.add_param(
-            "Pages", PageRangeField("Optional pages to rotate, e.g. 1,3,5-7")
-        )
-        self.rotate_panel.add_param("Angle", self.rotate_angle)
-        self.rotate_panel.run_requested.connect(self.run_rotate)
-
-        self.watermark_panel = OperationPanel(
-            "Watermark", "Apply Watermark", source_suffix="_watermarked"
-        )
-        self.watermark_input = self.watermark_panel.input_edit
-        self.watermark_output = self.watermark_panel.output_edit
-        self.watermark_text = QLineEdit()
-        self.watermark_text.setPlaceholderText("CONFIDENTIAL")
-        self.watermark_opacity = QDoubleSpinBox()
-        self.watermark_opacity.setDecimals(2)
-        self.watermark_opacity.setSingleStep(0.05)
-        self.watermark_opacity.setRange(0.0, 1.0)
-        self.watermark_opacity.setValue(DEFAULT_WATERMARK_OPACITY)
-        self.watermark_size = QSpinBox()
-        self.watermark_size.setMinimum(8)
-        self.watermark_size.setMaximum(300)
-        self.watermark_size.setValue(DEFAULT_WATERMARK_FONT_SIZE)
-        self.watermark_panel.add_param("Text", self.watermark_text)
-        self.watermark_panel.add_param("Opacity (0.0-1.0)", self.watermark_opacity)
-        self.watermark_panel.add_param("Font Size", self.watermark_size)
-        self.watermark_panel.run_requested.connect(self.run_watermark)
-
-        self.delete_panel = OperationPanel("Delete Pages", "Delete Pages", source_suffix="_deleted")
-        self.delete_input = self.delete_panel.input_edit
-        self.delete_output = self.delete_panel.output_edit
-        self.delete_pages = self.delete_panel.add_param(
-            "Pages", PageRangeField("Pages to delete, e.g. 2,4,6-8")
-        )
-        self.delete_panel.run_requested.connect(self.run_delete_pages)
-
-        # Reordering is driven entirely by the drag-and-drop dialog, so there is no
-        # hand-typed page-order field: the single button opens the preview grid and
-        # applies whatever order you drag the pages into.
-        self.reorder_panel = OperationPanel(
-            "Reorder Pages", "Choose order & reorder…", source_suffix="_reordered"
-        )
-        self.reorder_input = self.reorder_panel.input_edit
-        self.reorder_output = self.reorder_panel.output_edit
-        self.reorder_panel.run_requested.connect(self.choose_order_and_reorder)
-
-        self.extract_panel = OperationPanel(
-            "Extract Pages", "Extract to New PDF", source_suffix="_extracted"
-        )
-        self.extract_input = self.extract_panel.input_edit
-        self.extract_output = self.extract_panel.output_edit
-        self.extract_pages = self.extract_panel.add_param(
-            "Pages", PageRangeField("Pages to extract, e.g. 1,3,5-7")
-        )
-        self.extract_panel.run_requested.connect(self.run_extract_pages)
-
-        self.insert_panel = OperationPanel(
-            "Insert Pages", "Insert Pages", input_label="Base PDF", source_suffix="_inserted"
-        )
-        self.insert_input = self.insert_panel.input_edit
-        self.insert_file = self.insert_panel.add_input_row("Insert PDF", "PDF Files (*.pdf)")
-        self.insert_output = self.insert_panel.output_edit
-        self.insert_at = QSpinBox()
-        self.insert_at.setMinimum(1)
-        self.insert_at.setMaximum(100000)
-        self.insert_at.setValue(1)
-        self.insert_pages_field = self.insert_panel.add_param(
-            "Pages", PageRangeField("Optional pages from the inserted PDF")
-        )
-        self.insert_panel.add_param("Insert before page", self.insert_at)
-        self.insert_panel.run_requested.connect(self.run_insert_pages)
-
-        self.meta_panel = OperationPanel("Metadata", "Save metadata", source_suffix="_tagged")
-        self.meta_input = self.meta_panel.input_edit
-        self.meta_output = self.meta_panel.output_edit
-        self.meta_title = QLineEdit()
-        self.meta_author = QLineEdit()
-        self.meta_subject = QLineEdit()
-        self.meta_keywords = QLineEdit()
-        self.meta_panel.add_param("Title", self.meta_title)
-        self.meta_panel.add_param("Author", self.meta_author)
-        self.meta_panel.add_param("Subject", self.meta_subject)
-        self.meta_panel.add_param("Keywords", self.meta_keywords)
-        show_metadata_button = QPushButton("Show current metadata")
-        show_metadata_button.clicked.connect(self.run_show_metadata)
-        self.meta_panel.add_param("", show_metadata_button)
-        self.meta_panel.run_requested.connect(self.run_save_metadata)
-
-        self._bind_page_count(self.rotate_pages, self.rotate_input)
-        self._bind_page_count(self.delete_pages, self.delete_input)
-        self._bind_page_count(self.extract_pages, self.extract_input)
-        self._bind_page_count(self.insert_pages_field, self.insert_file)
-        return [
-            ("Rotate", self.rotate_panel),
-            ("Watermark", self.watermark_panel),
-            ("Delete Pages", self.delete_panel),
-            ("Reorder", self.reorder_panel),
-            ("Extract Pages", self.extract_panel),
-            ("Insert Pages", self.insert_panel),
-            ("Metadata", self.meta_panel),
-        ]
-
-    def _build_split_tab(self) -> QWidget:
-        tab = QWidget()
-        form = QFormLayout(tab)
-
-        split_in_row, self.split_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        split_out_row, self.split_output_dir, _ = _directory_row("Output Folder", "Select Folder")
-        self.split_pages = PageRangeField("Optional pages, e.g. 1,3,5-7")
-        self.split_prefix = QLineEdit()
-        self.split_prefix.setPlaceholderText("Optional filename prefix")
-
-        split_button = QPushButton("Split into Pages")
-        split_button.clicked.connect(self.run_split)
-
-        form.addRow(split_in_row)
-        form.addRow(split_out_row)
-        form.addRow("Pages", self.split_pages)
-        form.addRow("Prefix", self.split_prefix)
-        form.addRow(split_button)
-        self._bind_page_count(self.split_pages, self.split_input)
-        return tab
+        self.single_pdf_panel = PageOrganizerWidget()
+        self.single_pdf_panel.saved.connect(self._on_organized)
+        return self.single_pdf_panel
 
     def _build_combine_tab(self) -> QWidget:
         tab = QWidget()
@@ -836,39 +655,6 @@ class MainWindow(QMainWindow):
     def _show_error(self, error: Exception) -> None:
         QMessageBox.critical(self, "Error", f"{error}\n\nSee the log for details.")
 
-    def run_rotate(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.rotate_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.rotate_output.text(), "Output PDF")
-            pages = self.rotate_pages.value()
-            angle = self.rotate_angle.value()
-            logger.info("Starting rotation: %s -> %s", input_file, output_file)
-            self._run_async(
-                lambda: rotate_pdf(input_file, output_file, angle, pages),
-                "Rotation complete.",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Rotation failed: %s", exc, exc_info=True)
-            self._show_error(exc)
-
-    def run_watermark(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.watermark_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.watermark_output.text(), "Output PDF")
-            text = self.watermark_text.text().strip()
-            if not text:
-                raise ValueError("Watermark text is required.")
-            opacity = self.watermark_opacity.value()
-            font_size = self.watermark_size.value()
-            logger.info("Starting watermark: %s -> %s, text='%s'", input_file, output_file, text)
-            self._run_async(
-                lambda: watermark_pdf(input_file, output_file, text, opacity, font_size),
-                "Watermark complete.",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Watermark failed: %s", exc, exc_info=True)
-            self._show_error(exc)
-
     def run_combine(self) -> None:
         try:
             inputs = self.combine_inputs.paths()
@@ -879,35 +665,6 @@ class MainWindow(QMainWindow):
                     raise FileNotFoundError(f"Input PDF not found: {file_path}")
             output_file = _output_file_from_input(self.combine_output.text(), "Output PDF")
             self._run_async(lambda: combine_pdfs(inputs, output_file), "Combine complete.")
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-
-    def run_delete_pages(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.delete_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.delete_output.text(), "Output PDF")
-            pages = self.delete_pages.value()
-            if not pages:
-                raise ValueError("Pages to delete are required.")
-            self._run_async(
-                lambda: delete_page_range(input_file, output_file, pages),
-                "Delete pages complete.",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-
-    def run_split(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.split_input.text(), "Input PDF")
-            output_dir = _output_dir_from_input(self.split_output_dir.text(), "Output Folder")
-            pages = self.split_pages.value()
-            prefix = self.split_prefix.text().strip() or None
-
-            def _operation() -> str:
-                written_files = split_pdf(input_file, output_dir, pages, prefix)
-                return f"Split complete. Created {len(written_files)} files."
-
-            self._run_async(_operation, "Split complete.")
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
 
@@ -939,64 +696,6 @@ class MainWindow(QMainWindow):
         try:
             input_file = _existing_file_from_input(self.print_input.text(), "Input PDF")
             self._run_async(lambda: print_pdf(input_file), "Print command submitted.")
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-
-    def run_extract_pages(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.extract_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.extract_output.text(), "Output PDF")
-            pages = self.extract_pages.value()
-            if not pages:
-                raise ValueError("Pages to extract are required.")
-            self._run_async(
-                lambda: extract_pages(input_file, output_file, pages),
-                "Extract pages complete.",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-
-    def run_insert_pages(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.insert_input.text(), "Base PDF")
-            insert_file = _existing_file_from_input(self.insert_file.text(), "Insert PDF")
-            output_file = _output_file_from_input(self.insert_output.text(), "Output PDF")
-            position = self.insert_at.value()
-            pages = self.insert_pages_field.value()
-            self._run_async(
-                lambda: insert_pages(input_file, insert_file, output_file, position, pages),
-                "Insert pages complete.",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-
-    def run_show_metadata(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.meta_input.text(), "Input PDF")
-            entries = get_metadata(input_file)
-            self.meta_title.setText(entries.get("Title", ""))
-            self.meta_author.setText(entries.get("Author", ""))
-            self.meta_subject.setText(entries.get("Subject", ""))
-            self.meta_keywords.setText(entries.get("Keywords", ""))
-            self.status.showMessage(f"Loaded metadata from {input_file.name}", 8000)
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-
-    def run_save_metadata(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.meta_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.meta_output.text(), "Output PDF")
-            metadata = {
-                "Title": self.meta_title.text(),
-                "Author": self.meta_author.text(),
-                "Subject": self.meta_subject.text(),
-                "Keywords": self.meta_keywords.text(),
-            }
-            metadata = {key: value for key, value in metadata.items() if value}
-            self._run_async(
-                lambda: set_metadata(input_file, output_file, metadata),
-                "Metadata saved.",
-            )
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
 

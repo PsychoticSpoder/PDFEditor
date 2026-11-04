@@ -215,6 +215,13 @@ The project is now an installable `pdfeditor` package:
         instead of re-rendering it.
   - [x] Grid cells share one height so the "Page N" captions line up, and selected
         thumbnails get an outline.
+  - [x] One **Single PDF Editing** panel replaces the eight per-operation panels (Rotate,
+        Watermark, Delete Pages, Reorder, Extract Pages, Insert Pages, Metadata and Split):
+        it embeds the organizer widget, which now owns its own "PDF to edit" row. The shared
+        "Current PDF" bar is only shown for that panel.
+  - [x] `PdfThumbnailLoader` keeps itself alive until its worker thread really stops, so a
+        render can never outlive the widget that asked for it (Qt aborts if a running
+        QThread is destroyed).
 
 ### 10.4 Key artifacts
 

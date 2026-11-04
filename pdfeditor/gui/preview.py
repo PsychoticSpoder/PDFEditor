@@ -161,6 +161,12 @@ class _ThumbnailWorker(QObject):
         self.done.emit()
 
 
+#: Loaders whose worker thread has not stopped yet. Qt treats destroying a running QThread
+#: as fatal, so a loader keeps itself alive here until its thread really finishes — letting a
+#: render outlive the widget that asked for it (e.g. a panel being torn down mid-render).
+_ACTIVE_LOADERS: set[PdfThumbnailLoader] = set()
+
+
 class PdfThumbnailLoader(QObject):
     """Owns the worker thread that renders page thumbnails off the GUI thread.
 
@@ -190,6 +196,12 @@ class PdfThumbnailLoader(QObject):
         self._worker.rendered.connect(self.rendered)
         self._worker.failed.connect(self.failed)
         self._worker.done.connect(self._thread.quit)
+        self._thread.finished.connect(self._retire)
+        _ACTIVE_LOADERS.add(self)
+
+    def _retire(self) -> None:
+        """Drop the keep-alive reference once the worker thread has really stopped."""
+        _ACTIVE_LOADERS.discard(self)
 
     def start(self) -> None:
         self._thread.start()

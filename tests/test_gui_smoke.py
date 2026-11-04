@@ -24,8 +24,8 @@ def test_main_window_builds_with_sidebar(qtbot):
 
     assert window.windowTitle() == "PDF Editor Tool"
     assert window.panel_list.count() == window.panel_stack.count()
-    assert window.panel_list.item(0).text() == "Rotate"
-    assert window.panel_list.count() >= 12
+    assert window.panel_list.item(0).text() == "Single PDF Editing"
+    assert window.panel_list.count() == 5
 
 
 def test_sidebar_drives_panel_stack(qtbot):
@@ -44,16 +44,18 @@ def test_format_and_parse_page_selection():
     assert _parse_spec_to_pages("") == set()
 
 
-def test_current_document_propagates_to_panels(qtbot, tmp_path):
-    src = tmp_path / "doc.pdf"
-    src.write_bytes(b"%PDF")
+def test_current_document_loads_into_the_single_pdf_panel(qtbot, make_pdf):
+    src = make_pdf(pages=3)
 
     window = MainWindow()
     qtbot.addWidget(window)
     window.current_document.setText(str(src))
 
-    assert window.rotate_input.text() == str(src)
-    assert window.split_input.text() == str(src)
+    # Opening a PDF switches to the editing panel, which takes over the document...
+    assert window.panel_stack.currentIndex() == 0
+    assert window.single_pdf_panel.file_edit.text() == str(src)
+    assert window.single_pdf_panel.document is not None
+    # ...and the Print panel still gets it as well.
     assert window.print_input.text() == str(src)
 
 
@@ -356,21 +358,40 @@ def test_page_reorder_dialog_grid_toggle(qtbot, make_pdf):
     assert dialog.list.is_grid() is True
 
 
-def test_reorder_panel_has_single_action(qtbot):
+def test_single_pdf_panel_embeds_the_organizer(qtbot):
+    from pdfeditor.gui.organizer import PageOrganizerWidget
+
     window = MainWindow()
     qtbot.addWidget(window)
-    # No hand-typed order field: one button opens the drag dialog and applies the order.
-    assert window.reorder_panel.run_button.text().startswith("Choose order")
-    assert not hasattr(window, "reorder_order")
-    assert not hasattr(window, "reorder_pick_button")
+
+    assert window.panel_list.item(0).text() == "Single PDF Editing"
+    assert isinstance(window.single_pdf_panel, PageOrganizerWidget)
+    # The one panel replaces the eight per-operation panels, so their widgets are gone.
+    for removed in (
+        "rotate_input",
+        "watermark_input",
+        "delete_input",
+        "reorder_input",
+        "extract_input",
+        "insert_input",
+        "meta_input",
+        "split_input",
+    ):
+        assert not hasattr(window, removed)
 
 
-def test_edit_tab_has_parity_controls(qtbot):
+def test_current_pdf_bar_only_shows_for_the_editing_panel(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
-    assert window.extract_pages is not None
-    assert window.insert_pages_field is not None
-    assert window.meta_title is not None
+
+    # Shown for the Single PDF Editing panel (row 0)...
+    assert window.panel_list.currentRow() == 0
+    assert window.document_bar.isHidden() is False
+
+    # ...and hidden for every other panel.
+    window.panel_list.setCurrentRow(1)
+    assert window.panel_stack.currentIndex() == 1
+    assert window.document_bar.isHidden() is True
 
 
 def test_batch_dry_run_lists_files(qtbot, tmp_path):

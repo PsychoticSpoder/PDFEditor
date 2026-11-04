@@ -158,19 +158,24 @@ py pdf_tool.py dnd word-to-pdf input.docx output.pdf
 py pdf_gui.py
 ```
 
-The GUI has tabs for:
+The GUI is a list of panels down the left:
 
-- **Edit**: Rotate, watermark, delete pages, reorder pages
-- **Split**: Split PDF into individual pages
-- **Combine**: Merge multiple PDFs
+- **Single PDF Editing**: the page organizer (below) — every page as a thumbnail, with every
+  page operation in its toolbar and right-click menu
+- **Merge / Combine**: Merge multiple PDFs
 - **Convert**: Images to PDF, PDF to text
 - **Batch**: Process entire folders
 - **Print**: Print PDFs to default printer
 
+The **Current PDF** bar is only shown while the Single PDF Editing panel is selected, and
+**File → Open PDF…** (`Ctrl+O`) opens a document straight into it.
+
 ### Page organizer
 
-**File → Organize Pages…** (`Ctrl+Shift+O`) opens one view showing every page as a
-thumbnail. From there you can:
+The **Single PDF Editing** panel embeds the organizer: every page of the document as a
+draggable thumbnail grid, opened from the panel's own "PDF to edit" row. (**File → Organize
+Pages…**, `Ctrl+Shift+O`, opens the same view in its own window when you want to edit a
+second file.) From there you can:
 
 - Drag pages — or a whole multi-select block — to reorder them
 - Select pages with click, `Ctrl`+click, `Shift`+click or `Ctrl+A`, then right-click for

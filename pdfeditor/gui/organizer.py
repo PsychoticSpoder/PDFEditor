@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QAction, QImage, QTransform
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -48,7 +48,7 @@ from .preview import (
     _parse_spec_to_pages,
     qtpdf_available,
 )
-from .widgets import PageGridWidget
+from .widgets import DropLineEdit, PageGridWidget
 
 logger = logging.getLogger(__name__)
 
@@ -170,14 +170,17 @@ class ExportPagesDialog(QDialog):
         return self.single_button.isChecked()
 
 
-class PageOrganizerDialog(QDialog):
-    """A thumbnail grid of every page with all the page operations in one place.
+class PageOrganizerWidget(QWidget):
+    """Every page of one PDF as a selectable, draggable thumbnail grid.
 
     Selection follows the usual desktop conventions: click, Ctrl+click to toggle,
     Shift+click for a range, Ctrl+A for everything, and dragging a selection moves those
-    pages together. ``confirm_destructive`` controls the delete confirmation popup (tests
-    switch it off).
+    pages together. It carries its own "PDF to edit" row, so it works both embedded (the
+    Single PDF Editing panel) and inside :class:`PageOrganizerDialog`.
+    ``confirm_destructive`` controls the delete confirmation popup (tests switch it off).
     """
+
+    saved = Signal(str)
 
     #: Order of the right-click menu / "More actions" menu; an empty tuple is a divider.
     MENU_LAYOUT: tuple[tuple[str, ...], ...] = (
@@ -192,11 +195,9 @@ class PageOrganizerDialog(QDialog):
         ("revert", "save_as"),
     )
 
-    def __init__(self, path: str, parent: QWidget | None = None) -> None:
+    def __init__(self, path: str | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"Organize pages - {Path(path).name}")
-        self.setMinimumSize(900, 640)
-        self.document = PageOrganizerDocument(path)
+        self.document: PageOrganizerDocument | None = None
         self.confirm_destructive = True
         self._loader: PdfThumbnailLoader | None = None
         self._total = 0
@@ -210,6 +211,9 @@ class PageOrganizerDialog(QDialog):
         self._actions = self._build_actions()
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(self._build_file_row())
+
         hint = QLabel(
             "Drag pages to rearrange them, then select pages (Ctrl/Shift/Ctrl+A) and "
             "right-click for page actions. Edits are temporary until you Save As…"
@@ -223,18 +227,85 @@ class PageOrganizerDialog(QDialog):
         self.grid.customContextMenuRequested.connect(self._show_context_menu)
         self.grid.itemSelectionChanged.connect(self._update_status)
         self.grid.rows_moved.connect(self.commit_order)
-        layout.addWidget(self.grid)
+        layout.addWidget(self.grid, stretch=1)
         layout.addLayout(self._build_toolbar())
 
         self.status = QLabel("")
         self.status.setStyleSheet("color: #5f6368;")
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        if path:
+            self.load(path)
+        else:
+            self._update_status()
 
+    # -- the document being edited ---------------------------------------------
+    def _build_file_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        self.file_edit = DropLineEdit()
+        self.file_edit.setPlaceholderText("Drop or choose the PDF to edit")
+        self.file_edit.textChanged.connect(self._on_file_text_changed)
+        self.open_button = QPushButton("Open PDF")
+        self.open_button.clicked.connect(self._choose_file)
+        row.addWidget(QLabel("PDF to edit"))
+        row.addWidget(self.file_edit, stretch=1)
+        row.addWidget(self.open_button)
+        return row
+
+    def load(self, path: str) -> bool:
+        """Open ``path`` as the document to edit; False (with a message) when it fails."""
+        try:
+            document = PageOrganizerDocument(path)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Could not open %s in the organizer", path)
+            self.status.setText(f"Error: {exc}")
+            return False
+        self.close_document()
+        self.document = document
+        self._cleaned = False
+        if self.file_edit.text().strip() != str(path):
+            self.file_edit.blockSignals(True)
+            self.file_edit.setText(str(path))
+            self.file_edit.blockSignals(False)
         self.reload()
+        self.status.setText(f"Editing {Path(path).name}.")
+        return True
+
+    def close_document(self) -> None:
+        """Stop the thumbnail thread and drop the temporary working copy."""
+        if self._cleaned:
+            return
+        self._cleaned = True
+        self._stop_loader()
+        if self.document is not None:
+            self.document.close()
+            self.document = None
+
+    def closeEvent(self, event) -> None:
+        """Release the working copy and the render thread when the widget goes away."""
+        self.close_document()
+        super().closeEvent(event)
+
+    def _require_document(self) -> PageOrganizerDocument | None:
+        """The document being edited, or None (with a nudge) when none is open."""
+        if self.document is None:
+            self.status.setText("Open a PDF first.")
+        return self.document
+
+    def _choose_file(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
+        if file_name:
+            self.file_edit.setText(file_name)
+
+    def _on_file_text_changed(self, text: str) -> None:
+        """Open a newly nominated file (typed, pasted or dropped)."""
+        nomination = Path(text.strip()).expanduser()
+        if not text.strip() or not nomination.is_file():
+            return
+        if self.document is not None and nomination.resolve() == self.document.source:
+            return
+        self.load(str(nomination))
 
     # -- construction ----------------------------------------------------------
     def _build_actions(self) -> dict[str, QAction]:
@@ -334,6 +405,13 @@ class PageOrganizerDialog(QDialog):
     def reload(self) -> None:
         """Rebuild the grid from scratch (first load, and after Revert)."""
         self._stop_loader()
+        if self.document is None:
+            self.grid.clear()
+            self._keys = []
+            self._images.clear()
+            self._total = self._rendered = 0
+            self.status.setText("Open a PDF to start editing.")
+            return
         try:
             count = self.document.page_count()
         except Exception:  # noqa: BLE001 - the renderer reports the count as a fallback
@@ -427,9 +505,10 @@ class PageOrganizerDialog(QDialog):
 
     def _update_status(self) -> None:
         has_selection = bool(self.grid.selected_rows())
+        loaded = self.document is not None
         for action in self._actions.values():
-            if action.data():
-                action.setEnabled(has_selection)
+            needs_selection = bool(action.data())
+            action.setEnabled(loaded and (has_selection or not needs_selection))
         if self.grid.count():
             self.status.setText(
                 f"{self.grid.count()} page(s) · {len(self.grid.selected_rows())} selected"
@@ -503,9 +582,12 @@ class PageOrganizerDialog(QDialog):
         if not order or order == list(range(1, len(order) + 1)):
             return
         spec = ",".join(str(page) for page in order)
+        document = self._require_document()
+        if document is None:
+            return
         self._stop_loader()
         try:
-            self.document.reorder(spec)
+            document.reorder(spec)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Could not reorder the working copy")
             self.status.setText(f"Error: {exc}")
@@ -540,6 +622,8 @@ class PageOrganizerDialog(QDialog):
 
     def export_pages(self) -> None:
         """Export the selection as one PDF, or as one PDF per page."""
+        if self._require_document() is None:
+            return
         spec = self.selected_spec() or None
         scope = f"page(s) {spec}" if spec else "every page"
         dialog = ExportPagesDialog(scope, self)
@@ -552,11 +636,14 @@ class PageOrganizerDialog(QDialog):
 
     def export_single(self, spec: str | None = None) -> None:
         """Write the given pages (or every page) into one PDF."""
+        document = self._require_document()
+        if document is None:
+            return
         pages = spec or self._all_pages_spec()
         output, _ = QFileDialog.getSaveFileName(
             self,
             "Export pages to one PDF",
-            self.document.suggest_output_name("_selected"),
+            document.suggest_output_name("_selected"),
             "PDF Files (*.pdf)",
         )
         if not output:
@@ -579,6 +666,9 @@ class PageOrganizerDialog(QDialog):
 
     def insert_pages(self) -> None:
         """Insert the pages of another PDF before the selected page."""
+        document = self._require_document()
+        if document is None:
+            return
         source, _ = QFileDialog.getOpenFileName(
             self, "Choose the PDF to insert", "", "PDF Files (*.pdf)"
         )
@@ -586,13 +676,14 @@ class PageOrganizerDialog(QDialog):
             return
         rows = self.grid.selected_rows()
         default_position = max(rows) + 2 if rows else 1
+        count = document.page_count()
         position, accepted = QInputDialog.getInt(
             self,
             "Insert position",
-            f"Insert before page (1-{self.document.page_count() + 1}):",
+            f"Insert before page (1-{count + 1}):",
             default_position,
             1,
-            self.document.page_count() + 1,
+            count + 1,
         )
         if not accepted:
             return
@@ -601,7 +692,7 @@ class PageOrganizerDialog(QDialog):
 
         def new_keys() -> list[int]:
             """Only the inserted pages are new; the rest keep their thumbnails."""
-            inserted = max(self.document.page_count() - before, 0)
+            inserted = max(document.page_count() - before, 0)
             fresh = [self._new_key() for _ in range(inserted)]
             return self._keys[:split_at] + fresh + self._keys[split_at:]
 
@@ -630,7 +721,10 @@ class PageOrganizerDialog(QDialog):
 
     def edit_metadata(self) -> None:
         """View and edit the document metadata."""
-        dialog = MetadataDialog(self.document.get_metadata(), self)
+        document = self._require_document()
+        if document is None:
+            return
+        dialog = MetadataDialog(document.get_metadata(), self)
         if not dialog.exec():
             return
         values = dialog.values()
@@ -643,32 +737,41 @@ class PageOrganizerDialog(QDialog):
 
     def revert(self) -> None:
         """Throw away every edit and return to the original document."""
+        document = self._require_document()
+        if document is None:
+            return
         self._stop_loader()
-        self.document.revert()
+        document.revert()
         self.reload()
         self.status.setText("Reverted to the original document.")
 
     def save_as(self) -> str | None:
         """Write the working copy out to a file the user picks."""
+        document = self._require_document()
+        if document is None:
+            return None
         output, _ = QFileDialog.getSaveFileName(
             self,
             "Save organized PDF",
-            self.document.suggest_output_name(),
+            document.suggest_output_name(),
             "PDF Files (*.pdf)",
         )
         if not output:
             return None
         try:
-            saved = self.document.save_as(output)
+            saved = document.save_as(output)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Could not save the organized PDF")
             self.status.setText(f"Error: {exc}")
             return None
         self.status.setText(f"Saved {saved}.")
+        self.saved.emit(str(saved))
         return str(saved)
 
     def saved_path(self) -> str | None:
         """The file written by the last successful Save As, if any."""
+        if self.document is None:
+            return None
         path = self.document.saved_path
         return str(path) if path else None
 
@@ -681,9 +784,12 @@ class PageOrganizerDialog(QDialog):
         ``stale`` are the identities whose thumbnails must be dropped, i.e. the pages
         whose appearance changed. Both default to a full rebuild.
         """
+        document = self._require_document()
+        if document is None:
+            return
         self._stop_loader()
         try:
-            operation(self.document)
+            operation(document)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Page organizer action failed")
             self.status.setText(f"Error: {exc}")
@@ -699,6 +805,8 @@ class PageOrganizerDialog(QDialog):
 
     def _export(self, operation, describe) -> None:
         """Run an action that writes files outside the working copy; no grid reload."""
+        if self._require_document() is None:
+            return
         try:
             operation()
         except Exception as exc:  # noqa: BLE001
@@ -707,19 +815,28 @@ class PageOrganizerDialog(QDialog):
             return
         self.status.setText(describe() if callable(describe) else describe)
 
-    # -- lifecycle -------------------------------------------------------------
-    def done(self, result: int) -> None:
-        self._cleanup()
-        super().done(result)
+    # -- lifecycle (see :meth:`close_document`) ---------------------------------
 
-    def closeEvent(self, event) -> None:
-        self._cleanup()
-        super().closeEvent(event)
 
-    def _cleanup(self) -> None:
-        """Stop the thumbnail thread and drop the temporary working copy."""
-        if self._cleaned:
-            return
-        self._cleaned = True
-        self._stop_loader()
-        self.document.close()
+class PageOrganizerDialog(QDialog):
+    """The organizer in its own window; wraps the same widget the panel embeds."""
+
+    def __init__(self, path: str | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Organize pages - {Path(path).name}" if path else "Organize pages")
+        self.setMinimumSize(900, 640)
+
+        layout = QVBoxLayout(self)
+        self.organizer = PageOrganizerWidget(path, self)
+        layout.addWidget(self.organizer)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Release the temporary working copy when the window goes away.
+        self.finished.connect(lambda _result: self.organizer.close_document())
+
+    def saved_path(self) -> str | None:
+        """The file written by the last successful Save As, if any."""
+        return self.organizer.saved_path()

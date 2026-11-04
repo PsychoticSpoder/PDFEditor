@@ -271,22 +271,37 @@ def test_main_window_menu_opens_the_page_organizer(qtbot):
 # -- incremental thumbnails ----------------------------------------------------
 
 
-def test_organizer_rotating_one_page_only_re_renders_that_page(qtbot, make_pdf):
+def test_page_grid_cells_share_one_height_so_labels_line_up(qtbot):
+    grid = PageGridWidget(grid=True, multi_select=True)
+    qtbot.addWidget(grid)
+    portrait = QListWidgetItem("Page 1")
+    landscape = QListWidgetItem("Page 2")
+    grid.addItem(portrait)
+    grid.addItem(landscape)
+
+    grid.set_thumbnail(portrait, QImage(QSize(110, 142), QImage.Format.Format_RGB32))
+    grid.set_thumbnail(landscape, QImage(QSize(142, 110), QImage.Format.Format_RGB32))
+
+    # Same height => every caption sits on the same baseline; only the width differs.
+    assert portrait.sizeHint().height() == landscape.sizeHint().height()
+    assert landscape.sizeHint().width() > portrait.sizeHint().width()
+
+
+def test_organizer_rotating_turns_the_cached_preview(qtbot, make_pdf):
     _needs_qtpdf()
-    dialog = _open(make_pdf(pages=3), qtbot)
-    qtbot.waitUntil(lambda: len(dialog._images) == 3, timeout=5000)
+    dialog = _open(make_pdf(pages=2), qtbot)
+    qtbot.waitUntil(lambda: len(dialog._images) == 2, timeout=5000)
+    before = dialog._images[dialog._keys[0]].size()
 
     dialog.grid.item(0).setSelected(True)
     dialog.rotate_selected(90)
 
-    # The untouched pages keep their cached thumbnails straight away...
-    assert dialog.grid.item(1).icon().isNull() is False
-    assert dialog.grid.item(2).icon().isNull() is False
+    # Nothing is re-rendered: the stored preview is simply turned on its side.
     assert len(dialog._images) == 2
-    # ...and only the rotated page is re-rendered.
-    assert dialog.grid.item(0).icon().isNull() is True
-    qtbot.waitUntil(lambda: not dialog.grid.item(0).icon().isNull(), timeout=5000)
-    assert len(dialog._images) == 3
+    after = dialog._images[dialog._keys[0]].size()
+    assert (after.width(), after.height()) == (before.height(), before.width())
+    assert dialog.grid.item(0).icon().isNull() is False
+    assert dialog.status.text().startswith("Rotated")
 
 
 def test_organizer_metadata_keeps_every_thumbnail(qtbot, make_pdf, monkeypatch):
@@ -366,11 +381,16 @@ def test_page_grid_thumbnail_keeps_the_page_aspect(qtbot):
     item = QListWidgetItem("Page 1")
     grid.addItem(item)
 
-    grid.set_thumbnail(item, QImage(QSize(108, 83), QImage.Format.Format_RGB32))
-    assert item.sizeHint().width() > item.sizeHint().height()
+    grid.set_thumbnail(item, QImage(QSize(142, 110), QImage.Format.Format_RGB32))
+    landscape = item.sizeHint()
 
-    grid.set_thumbnail(item, QImage(QSize(108, 142), QImage.Format.Format_RGB32))
-    assert item.sizeHint().height() > item.sizeHint().width()
+    grid.set_thumbnail(item, QImage(QSize(110, 142), QImage.Format.Format_RGB32))
+    portrait = item.sizeHint()
+
+    # The cell follows the page's own width, and both share the one cell height (which is
+    # what keeps the "Page N" captions on a single line).
+    assert landscape.width() > portrait.width()
+    assert landscape.height() == portrait.height() == PageGridWidget.cell_height()
 
 
 def test_thumbnail_worker_fits_each_page_to_its_own_aspect():

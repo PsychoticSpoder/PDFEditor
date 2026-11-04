@@ -210,6 +210,11 @@ The project is now an installable `pdfeditor` package:
         that is on screen.
   - [x] Extract and Split merged into one **Export Pages…** action: one PDF, or one PDF per
         page.
+  - [x] Edits are recorded and then written in a single pass, only when a real file is
+        needed, so large PDFs stay responsive — and rotating transforms the cached preview
+        instead of re-rendering it.
+  - [x] Grid cells share one height so the "Page N" captions line up, and selected
+        thumbnails get an outline.
 
 ### 10.4 Key artifacts
 

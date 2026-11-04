@@ -142,6 +142,77 @@ def test_organizer_rejects_a_missing_source(tmp_path):
         PageOrganizerDocument(tmp_path / "missing.pdf")
 
 
+def test_organizer_defers_writes_until_a_file_is_needed(make_pdf):
+    """Edits are tracked in memory; the whole-document rewrite waits until a file is asked for."""
+    source = make_pdf(pages=4)
+    with PageOrganizerDocument(source) as document:
+        document.rotate("1", 90)
+        document.delete("4")
+
+        assert document.page_count() == 3  # tracked without touching the file
+        assert len(document._pending) == 2
+
+        assert _page_numbers(document.path) == [1, 2, 3]  # reading `.path` writes them
+        assert document._pending == []
+        assert PdfReader(str(document.path)).pages[0].rotation == 90
+
+
+def test_organizer_writes_every_pending_edit_in_one_pass(make_pdf, monkeypatch):
+    """A run of edits costs a single rewrite, not one per edit."""
+    from pdfeditor.core import organizer as core_organizer
+
+    rewrites: list[object] = []
+    real_write = core_organizer._atomic_write_pdf
+
+    def spy(writer, path):
+        rewrites.append(path)
+        return real_write(writer, path)
+
+    monkeypatch.setattr(core_organizer, "_atomic_write_pdf", spy)
+
+    source = make_pdf(pages=4)
+    with PageOrganizerDocument(source) as document:
+        document.rotate("2", 90)
+        document.reorder("4,1,3,2")
+        document.delete("1")
+        document.set_metadata({"Title": "Combined"})
+
+        assert rewrites == []
+        assert _page_numbers(document.path) == [1, 3, 2]
+        assert len(rewrites) == 1
+
+
+def test_organizer_composes_edits_like_the_eager_core_operations(make_pdf):
+    """The single-pass rewrite produces the same document as the step-by-step core calls."""
+    source = make_pdf(pages=4)
+    extra = make_pdf("extra.pdf", pages=2)
+
+    with PageOrganizerDocument(source) as document:
+        document.rotate("2", 90)
+        document.reorder("4,1,3,2")
+        document.delete("1")
+        document.insert(extra, position=2, pages="1")
+        document.set_metadata({"Title": "Combined"})
+
+        numbers = _page_numbers(document.path)
+        rotations = [page.rotation for page in PdfReader(str(document.path)).pages]
+        metadata = document.get_metadata()
+
+    assert numbers == [1, 1, 3, 2]
+    # The page that started life as page 2 kept its rotation through the reorder/delete and
+    # ended up last, which is exactly where the composed plan put it.
+    assert rotations == [0, 0, 0, 90]
+    assert metadata["Title"] == "Combined"
+
+
+def test_organizer_reports_a_delete_of_every_page_immediately(make_pdf):
+    source = make_pdf(pages=2)
+    with PageOrganizerDocument(source) as document:
+        with pytest.raises(ValueError, match="removed all pages"):
+            document.delete("1-2")
+        assert document.page_count() == 2
+
+
 def test_organizer_suggests_an_output_name(make_pdf):
     source = make_pdf("report.pdf", pages=1)
     with PageOrganizerDocument(source) as document:

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from PIL import Image
-from pypdf import PdfReader, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
@@ -203,6 +203,34 @@ def split_pdf(input_file: Path, output_dir: Path, pages: str | None, prefix: str
     return written_files
 
 
+def _watermark_overlay_page(
+    page_width: float,
+    page_height: float,
+    text: str,
+    opacity: float,
+    font_size: int,
+) -> PageObject:
+    """Build a one-page watermark overlay sized to match a page, ready to merge."""
+    # Matching each page's size keeps the overlay aligned.
+    packet = io.BytesIO()
+    watermark_canvas = canvas.Canvas(packet, pagesize=(page_width, page_height))
+    watermark_canvas.saveState()
+    watermark_canvas.translate(page_width / 2, page_height / 2)
+    watermark_canvas.rotate(WATERMARK_ROTATION_ANGLE)
+    try:
+        watermark_canvas.setFillAlpha(opacity)
+    except AttributeError:
+        pass
+    watermark_canvas.setFont("Helvetica-Bold", font_size)
+    watermark_canvas.setFillColorRGB(0.55, 0.55, 0.55)
+    watermark_canvas.drawCentredString(0, 0, text)
+    watermark_canvas.restoreState()
+    watermark_canvas.save()
+
+    packet.seek(0)
+    return PdfReader(packet).pages[0]
+
+
 def watermark_pdf(
     input_file: Path,
     output_file: Path,
@@ -235,28 +263,14 @@ def watermark_pdf(
         if index not in pages_to_mark:
             continue
 
-        page_width = float(page.mediabox.width)
-        page_height = float(page.mediabox.height)
-
-        # Build a watermark page matching each page size so overlay stays aligned.
-        packet = io.BytesIO()
-        watermark_canvas = canvas.Canvas(packet, pagesize=(page_width, page_height))
-        watermark_canvas.saveState()
-        watermark_canvas.translate(page_width / 2, page_height / 2)
-        watermark_canvas.rotate(WATERMARK_ROTATION_ANGLE)
-        try:
-            watermark_canvas.setFillAlpha(opacity)
-        except AttributeError:
-            pass
-        watermark_canvas.setFont("Helvetica-Bold", font_size)
-        watermark_canvas.setFillColorRGB(0.55, 0.55, 0.55)
-        watermark_canvas.drawCentredString(0, 0, text)
-        watermark_canvas.restoreState()
-        watermark_canvas.save()
-
-        packet.seek(0)
-        watermark_page = PdfReader(packet).pages[0]
-        writer.pages[-1].merge_page(watermark_page)
+        overlay = _watermark_overlay_page(
+            float(page.mediabox.width),
+            float(page.mediabox.height),
+            text,
+            opacity,
+            font_size,
+        )
+        writer.pages[-1].merge_page(overlay)
 
     _atomic_write_pdf(writer, output_file)
     

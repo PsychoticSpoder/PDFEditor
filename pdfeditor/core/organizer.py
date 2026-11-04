@@ -17,25 +17,22 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Any
 
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
-from .pdf_ops import (
-    delete_page_range,
-    extract_pages,
-    get_metadata,
-    insert_pages,
-    reorder_pages,
-    rotate_pdf,
-    set_metadata,
-    split_pdf,
-    watermark_pdf,
-)
+from .io_utils import _atomic_write_pdf
+from .pdf_ops import _watermark_overlay_page, extract_pages, get_metadata, split_pdf
+from .ranges import _parse_page_order, _parse_page_range
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["PageOrganizerDocument"]
+
+#: A recorded edit: (kind, args).
+_Edit = tuple[str, tuple[Any, ...]]
+#: A resolved page: (source file, page index in it, extra rotation, watermark stamp).
+_Entry = tuple[Path, int, int, tuple[str, float, int] | None]
 
 
 class PageOrganizerDocument:
@@ -62,6 +59,13 @@ class PageOrganizerDocument:
         self._saved_path: Path | None = None
         self._dirty = False
         shutil.copyfile(self._source, self._working)
+        self._source_count = len(PdfReader(str(self._source)).pages)
+        # Edits are recorded rather than written straight away, because rewriting the whole
+        # document on every click is what made large PDFs feel slow. `_materialize` applies
+        # them all in one pass, the first time a real file is actually needed.
+        self._pending: list[_Edit] = []
+        self._count = self._source_count
+        self._materialized_count = self._source_count
 
     # -- lifecycle -------------------------------------------------------------
     def __enter__(self) -> PageOrganizerDocument:
@@ -88,7 +92,12 @@ class PageOrganizerDocument:
 
     @property
     def path(self) -> Path:
-        """The working copy, including every edit applied so far."""
+        """The working copy, including every edit applied so far.
+
+        Reading this writes any still-pending edits to disk first, so the file always
+        matches what the grid shows. ``page_count`` and the metadata do not need that.
+        """
+        self._materialize()
         return self._working
 
     @property
@@ -102,25 +111,27 @@ class PageOrganizerDocument:
         return self._dirty
 
     def page_count(self) -> int:
-        """Number of pages in the current working copy."""
-        return len(PdfReader(str(self._working)).pages)
+        """Number of pages as edited so far (no file access, so it stays instant)."""
+        return self._count
 
     def suggest_output_name(self, suffix: str = "_organized") -> str:
         """A sensible default filename for the ``save_as``/``extract`` prompts."""
         return f"{self._source.stem}{suffix}.pdf"
 
     # -- page operations -------------------------------------------------------
+    # Each one records the edit (and updates the in-memory page count); the file itself is
+    # written once, on demand.
     def reorder(self, order_spec: str) -> None:
         """Reorder every page, e.g. ``"3,1,2"``."""
-        self._apply(lambda output: reorder_pages(self._working, output, order_spec))
+        self._record("reorder", order_spec)
 
     def rotate(self, pages: str | None, angle: int) -> None:
         """Rotate ``pages`` (every page when ``None``) by ``angle`` degrees."""
-        self._apply(lambda output: rotate_pdf(self._working, output, angle, pages))
+        self._record("rotate", pages, angle)
 
     def delete(self, pages: str) -> None:
         """Remove ``pages`` from the document."""
-        self._apply(lambda output: delete_page_range(self._working, output, pages))
+        self._record("delete", pages)
 
     def watermark(
         self,
@@ -130,9 +141,7 @@ class PageOrganizerDocument:
         font_size: int,
     ) -> None:
         """Stamp ``text`` across ``pages`` (every page when ``None``)."""
-        self._apply(
-            lambda output: watermark_pdf(self._working, output, text, opacity, font_size, pages)
-        )
+        self._record("watermark", pages, text, opacity, font_size)
 
     def insert(
         self,
@@ -144,23 +153,25 @@ class PageOrganizerDocument:
         insert_path = Path(insert_file).expanduser()
         if not insert_path.is_file():
             raise FileNotFoundError(f"PDF to insert not found: {insert_path}")
-        self._apply(
-            lambda output: insert_pages(self._working, insert_path, output, position, pages)
-        )
+        self._record("insert", insert_path, position, pages)
 
     def get_metadata(self) -> dict[str, str]:
         """Document metadata, keyed without the leading slash (e.g. ``Title``)."""
-        return get_metadata(self._working)
+        metadata = dict(get_metadata(self._working))
+        for kind, args in self._pending:
+            if kind == "metadata":
+                metadata.update({str(key).lstrip("/"): value for key, value in args[0].items()})
+        return metadata
 
     def set_metadata(self, metadata: dict[str, str]) -> None:
         """Update the supplied metadata keys on the working copy."""
-        self._apply(lambda output: set_metadata(self._working, output, metadata))
+        self._record("metadata", dict(metadata))
 
     # -- exports (these leave the working copy untouched) ----------------------
     def extract(self, pages: str, output_file: Path | str) -> Path:
         """Write ``pages`` to a separate PDF."""
         destination = Path(output_file).expanduser()
-        extract_pages(self._working, destination, pages)
+        extract_pages(self.path, destination, pages)
         return destination
 
     def split(
@@ -170,13 +181,13 @@ class PageOrganizerDocument:
         prefix: str | None = None,
     ) -> list[Path]:
         """Write one PDF per page into ``output_dir``."""
-        return split_pdf(self._working, Path(output_dir).expanduser(), pages, prefix)
+        return split_pdf(self.path, Path(output_dir).expanduser(), pages, prefix)
 
     def save_as(self, output_file: Path | str) -> Path:
-        """Copy the working copy to ``output_file`` and remember where it went."""
+        """Write every pending edit, then copy the result to ``output_file``."""
         destination = Path(output_file).expanduser()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(self._working, destination)
+        shutil.copyfile(self.path, destination)
         self._saved_path = destination
         self._dirty = False
         logger.info(f"Saved organized PDF: {destination}")
@@ -184,14 +195,97 @@ class PageOrganizerDocument:
 
     def revert(self) -> None:
         """Discard every edit by copying the original PDF over the working copy."""
+        self._pending.clear()
         shutil.copyfile(self._source, self._working)
+        self._count = self._materialized_count = self._source_count
         self._saved_path = None
         self._dirty = False
 
     # -- internals -------------------------------------------------------------
-    def _apply(self, operation: Callable[[Path], None]) -> None:
-        """Run ``operation`` into a staging file, then swap it into the working copy."""
-        operation(self._staging)
-        self._staging.replace(self._working)
+    def _record(self, kind: str, *args: Any) -> None:
+        """Note an edit and track its effect on the page list, without touching the file."""
+        if kind == "delete":
+            doomed = _parse_page_range(str(args[0]), self._count)
+            if len(doomed) >= self._count:
+                raise ValueError("Delete range removed all pages. Output PDF would be empty.")
+            self._count -= len(doomed)
+        elif kind in ("rotate", "watermark"):
+            _parse_page_range(args[0], self._count)  # validate the spec up front
+        elif kind == "reorder":
+            _parse_page_order(str(args[0]), self._count)
+        elif kind == "insert":
+            insert_file, position, pages = args
+            if not 1 <= int(position) <= self._count + 1:
+                raise ValueError(f"Insert position must be between 1 and {self._count + 1}.")
+            selected = _parse_page_range(pages, len(PdfReader(str(insert_file)).pages))
+            self._count += len(selected)
+        self._pending.append((kind, args))
         self._saved_path = None
         self._dirty = True
+
+    def _materialize(self) -> None:
+        """Write every pending edit to the working copy in a single pass."""
+        pending, self._pending = self._pending, []
+        if not pending:
+            return
+        entries: list[_Entry] = [
+            (self._working, index, 0, None) for index in range(self._materialized_count)
+        ]
+        metadata: dict[str, str] = {}
+        for kind, args in pending:
+            if kind == "reorder":
+                order = _parse_page_order(str(args[0]), len(entries))
+                entries = [entries[index] for index in order]
+            elif kind == "rotate":
+                pages, angle = args[0], int(args[1])
+                for index in _parse_page_range(pages, len(entries)):
+                    path, page_index, rotation, stamp = entries[index]
+                    entries[index] = (path, page_index, (rotation + angle) % 360, stamp)
+            elif kind == "delete":
+                doomed = _parse_page_range(str(args[0]), len(entries))
+                entries = [entry for index, entry in enumerate(entries) if index not in doomed]
+            elif kind == "insert":
+                insert_file, position, pages = args
+                reader = PdfReader(str(insert_file))
+                selected = sorted(_parse_page_range(pages, len(reader.pages)))
+                split_at = min(max(int(position) - 1, 0), len(entries))
+                insert_path = Path(str(insert_file))
+                entries[split_at:split_at] = [(insert_path, index, 0, None) for index in selected]
+            elif kind == "watermark":
+                pages, text, opacity, font_size = args
+                stamp: tuple[str, float, int] = (str(text), float(opacity), int(font_size))
+                for index in _parse_page_range(pages, len(entries)):
+                    path, page_index, rotation, _ = entries[index]
+                    entries[index] = (path, page_index, rotation, stamp)
+            elif kind == "metadata":
+                metadata.update(args[0])
+        self._write(entries, metadata)
+        self._materialized_count = self._count
+
+    def _write(self, entries: list[_Entry], metadata: dict[str, str]) -> None:
+        """Build the output document from the resolved page list in one pass."""
+        readers: dict[Path, PdfReader] = {}
+        writer = PdfWriter()
+        for path, page_index, rotation, stamp in entries:
+            reader = readers.get(path)
+            if reader is None:
+                reader = readers[path] = PdfReader(str(path))
+            page = reader.pages[page_index]
+            if rotation % 360:
+                page.rotate(rotation)
+            writer.add_page(page)
+            if stamp is not None:
+                text, opacity, font_size = stamp
+                writer.pages[-1].merge_page(
+                    _watermark_overlay_page(
+                        float(page.mediabox.width),
+                        float(page.mediabox.height),
+                        text,
+                        opacity,
+                        font_size,
+                    )
+                )
+        if metadata:
+            writer.add_metadata({f"/{key.lstrip('/')}": value for key, value in metadata.items()})
+        _atomic_write_pdf(writer, self._staging)
+        self._staging.replace(self._working)

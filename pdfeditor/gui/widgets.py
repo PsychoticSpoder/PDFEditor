@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QImage, QPixmap
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QImage, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -34,7 +34,7 @@ from ..core import (
 
 # Thumbnail sizes shared by every page grid (picker, reorder dialog, organizer).
 GRID_ICON_SIZE = QSize(96, 128)
-GRID_CELL_SIZE = QSize(120, 176)
+GRID_CELL_SIZE = QSize(122, 172)
 LIST_ICON_SIZE = QSize(64, 84)
 LIST_ROW_HEIGHT = 92
 
@@ -42,7 +42,8 @@ LIST_ROW_HEIGHT = 92
 THUMBNAIL_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 _CAPTION_HEIGHT = 18
 _CELL_PADDING = 6
-_GRID_THUMB_BOX = QSize(108, 142)
+#: Widest/tallest thumbnail a grid cell allows; cells are this tall whatever the page.
+_GRID_THUMB_BOX = QSize(160, 142)
 
 
 class _ThumbnailDelegate(QStyledItemDelegate):
@@ -74,6 +75,16 @@ class _ThumbnailDelegate(QStyledItemDelegate):
             Qt.TransformationMode.SmoothTransformation,
         )
 
+    @staticmethod
+    def _centred(pixmap: QPixmap, area: QRect) -> QRect:
+        """The rect ``pixmap`` occupies when centred inside ``area``."""
+        return QRect(
+            area.left() + (area.width() - pixmap.width()) // 2,
+            area.top() + (area.height() - pixmap.height()) // 2,
+            pixmap.width(),
+            pixmap.height(),
+        )
+
     def paint(self, painter, option, index) -> None:
         widget = option.widget
         style = widget.style() if widget is not None else QApplication.style()
@@ -87,37 +98,46 @@ class _ThumbnailDelegate(QStyledItemDelegate):
             return
 
         if self._caption_below:
-            box = QSize(rect.width(), max(1, rect.height() - _CAPTION_HEIGHT))
-            scaled = self._fit(pixmap, box)
-            painter.drawPixmap(
-                rect.left() + (box.width() - scaled.width()) // 2,
-                rect.top() + (box.height() - scaled.height()) // 2,
-                scaled,
+            area = QRect(
+                rect.left(), rect.top(), rect.width(), max(1, rect.height() - _CAPTION_HEIGHT)
             )
+            target = self._centred(self._fit(pixmap, area.size()), area)
             caption_rect = QRect(
-                rect.left(), rect.bottom() - _CAPTION_HEIGHT + 1, rect.width(), _CAPTION_HEIGHT
+                rect.left(),
+                rect.bottom() - _CAPTION_HEIGHT + 1,
+                rect.width(),
+                _CAPTION_HEIGHT,
             )
-            painter.drawText(
-                caption_rect,
-                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
-                caption,
+            caption_flags = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        else:
+            area = QRect(
+                rect.left() + _CELL_PADDING,
+                rect.top() + _CELL_PADDING,
+                max(1, rect.width() - 2 * _CELL_PADDING),
+                max(1, rect.height() - 2 * _CELL_PADDING),
             )
-            return
+            fitted = self._fit(pixmap, area.size())
+            target = QRect(
+                area.left(),
+                area.top() + (area.height() - fitted.height()) // 2,
+                fitted.width(),
+                fitted.height(),
+            )
+            text_left = target.right() + _CELL_PADDING
+            caption_rect = QRect(
+                text_left, rect.top(), max(0, rect.right() - text_left), rect.height()
+            )
+            caption_flags = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
 
-        scaled = self._fit(
-            pixmap, QSize(rect.width() - 2 * _CELL_PADDING, rect.height() - 2 * _CELL_PADDING)
-        )
-        painter.drawPixmap(
-            rect.left() + _CELL_PADDING,
-            rect.top() + (rect.height() - scaled.height()) // 2,
-            scaled,
-        )
-        text_left = rect.left() + 2 * _CELL_PADDING + scaled.width()
-        painter.drawText(
-            QRect(text_left, rect.top(), max(0, rect.right() - text_left), rect.height()),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            caption,
-        )
+        painter.drawPixmap(target.topLeft(), self._fit(pixmap, target.size()))
+        if option.state & QStyle.StateFlag.State_Selected:
+            # An outline makes the selection obvious; the panel highlight alone is subtle.
+            painter.save()
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(option.palette.highlight().color(), 2))
+            painter.drawRect(target.adjusted(-1, -1, 1, 1))
+            painter.restore()
+        painter.drawText(caption_rect, caption_flags, caption)
 
 
 class DropLineEdit(QLineEdit):
@@ -651,11 +671,22 @@ class PageGridWidget(QListWidget):
         item.setSizeHint(self._cell_size_for(pixmap.size()))
 
     def _cell_size_for(self, thumbnail: QSize) -> QSize:
-        height = thumbnail.height() + _CAPTION_HEIGHT + 2 * _CELL_PADDING
+        """A cell sized from the thumbnail's width but always the *same* height.
+
+        The constant height keeps every "Page N" caption on one baseline, while a landscape
+        page still gets a wider cell than a portrait one.
+        """
         if self._grid:
-            return QSize(thumbnail.width() + 2 * _CELL_PADDING, height)
-        # A zero width keeps list rows stretched across the viewport.
-        return QSize(0, max(LIST_ROW_HEIGHT, height))
+            width = min(thumbnail.width(), _GRID_THUMB_BOX.width())
+            return QSize(width + 2 * _CELL_PADDING, self.cell_height())
+        return QSize(
+            0, max(LIST_ROW_HEIGHT, thumbnail.height() + _CAPTION_HEIGHT + 2 * _CELL_PADDING)
+        )
+
+    @staticmethod
+    def cell_height() -> int:
+        """The fixed height of a grid cell (thumbnail area + caption + padding)."""
+        return _GRID_THUMB_BOX.height() + _CAPTION_HEIGHT + 2 * _CELL_PADDING
 
     def _resize_item(self, item: QListWidgetItem) -> None:
         """(Re)apply an item's cell size, e.g. after switching grid/list mode."""

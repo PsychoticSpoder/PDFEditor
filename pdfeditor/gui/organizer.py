@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QImage
+from PySide6.QtGui import QAction, QImage, QTransform
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -448,15 +448,21 @@ class PageOrganizerDialog(QDialog):
 
     # -- page operations -------------------------------------------------------
     def rotate_selected(self, angle: int) -> None:
-        """Rotate the selection, or every page when nothing is selected."""
+        """Rotate the selection; the previews turn instantly, without being re-rendered."""
         pages = self.selected_spec() or None
-        keys, stale = self._keys_with_fresh(self._rows_for(pages))
+        transform = QTransform().rotate(angle)
+        keys = list(self._keys)
+        for row in self._rows_for(pages):
+            cached = self._images.pop(keys[row], None)
+            keys[row] = self._new_key()
+            if cached is not None:
+                # A rotated page is just the old preview turned, so no render is needed.
+                self._images[keys[row]] = cached.transformed(transform)
         target = f"page(s) {pages}" if pages else "every page"
         self._mutate(
             lambda doc: doc.rotate(pages, angle),
             f"Rotated {target} by {angle}°.",
             keys=keys,
-            stale=stale,
         )
 
     def _keys_with_fresh(self, rows: list[int]) -> tuple[list[int], list[int]]:

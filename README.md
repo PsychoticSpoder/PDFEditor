@@ -177,8 +177,12 @@ thumbnail. From there you can:
   the page actions: rotate (left/right/180°), delete, export, insert, watermark and
   metadata
 - **Export Pages…** asks whether the pages should become one PDF or one PDF per page
+- Selected thumbnails are outlined, and every "Page N" caption stays on the same line even
+  when pages have different shapes
 - Thumbnails keep each page's own shape (a rotated page previews as landscape) and are
   cached, so an edit only redraws the pages it actually changed
+- Edits are held in memory and written to a file only when one is needed (Save As/export),
+  so rotating, deleting and reordering stay instant even on very large PDFs
 - Read the live page/selection count in the status line
 - Use **Revert to Original** to discard the whole editing session
 

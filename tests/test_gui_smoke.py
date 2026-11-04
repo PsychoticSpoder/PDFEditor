@@ -213,6 +213,7 @@ def test_page_reorder_dialog_order_spec(qtbot, make_pdf):
     src = make_pdf(pages=3)
     dialog = PageReorderDialog(str(src))
     qtbot.addWidget(dialog)
+    qtbot.waitUntil(lambda: dialog.list.count() == 3, timeout=5000)
     assert dialog.order_spec() == "1,2,3"
 
     # Move the last page to the front (as a drag would).
@@ -234,6 +235,7 @@ def test_page_reorder_dialog_items_are_laid_out(qtbot, make_pdf):
     qtbot.addWidget(dialog)
     dialog.resize(760, 600)
     dialog.show()
+    qtbot.waitUntil(lambda: dialog.list.count() == 4, timeout=5000)
     qtbot.wait(80)
 
     viewport = dialog.list.viewport().rect()
@@ -256,8 +258,8 @@ def test_page_reorder_dialog_items_are_laid_out(qtbot, make_pdf):
         viewport.contains(dialog.list.visualItemRect(dialog.list.item(i))) for i in range(4)
     )
 
-    # Let the lazy renderer set the thumbnails; layout/hit-testing must stay correct.
-    qtbot.wait(250)
+    # Thumbnails arrive from the worker thread; layout/hit-testing must stay correct.
+    qtbot.waitUntil(lambda: not dialog.list.item(0).icon().isNull(), timeout=5000)
     after = item_positions()
     assert all(rect[2] > 0 and rect[3] > 0 for rect in after)
     assert len({(rect[0], rect[1]) for rect in after}) == 4
@@ -277,6 +279,7 @@ def test_page_reorder_dialog_move_buttons(qtbot, make_pdf):
     src = make_pdf(pages=3)
     dialog = PageReorderDialog(str(src))
     qtbot.addWidget(dialog)
+    qtbot.waitUntil(lambda: dialog.list.count() == 3, timeout=5000)
     dialog.list.setCurrentRow(0)
     dialog._move_selected(1)
     assert dialog.order_spec() == "2,1,3"
@@ -293,6 +296,7 @@ def test_page_picker_dialog_selected_spec(qtbot, make_pdf):
     src = make_pdf(pages=3)
     dialog = PagePickerDialog(str(src), "1,3")
     qtbot.addWidget(dialog)
+    qtbot.waitUntil(lambda: len(dialog._boxes) == 3, timeout=5000)
     assert dialog.selected_spec() == "1,3"
 
 

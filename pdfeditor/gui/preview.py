@@ -1,14 +1,22 @@
-"""PDF preview and a thumbnail page-picker built on PySide6's bundled QtPdf.
+"""PDF preview and thumbnail dialogs built on PySide6's bundled QtPdf.
 
-QtPdf ships with PySide6, so no extra dependency is required. If it is unavailable in
-a given build, the widgets degrade to a short message and the page-picker button is
-hidden rather than failing.
+QtPdf ships with PySide6, so no extra dependency is required. If it is unavailable in a
+given build, the widgets degrade to a short message and the page-picker button is hidden
+rather than failing.
+
+Loading a document and rendering every page synchronously would freeze the UI on large
+PDFs, so all thumbnails are produced by :class:`PdfThumbnailLoader` on a background
+thread and delivered as ``QImage``s (the ``QPixmap`` is created back on the GUI thread).
+This keeps the dialogs fully interactive — pages can be clicked and dragged while the
+thumbnails stream in.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QIcon, QPixmap
+import threading
+
+from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -33,6 +41,10 @@ try:  # pragma: no cover - depends on the PySide6 build
 except ImportError:  # pragma: no cover
     QPdfDocument = None  # type: ignore[assignment,misc]
     _QT_PDF_AVAILABLE = False
+
+# Thumbnail render sizes
+_PICKER_THUMB = QSize(110, 140)
+_REORDER_THUMB = QSize(96, 128)
 
 
 def qtpdf_available() -> bool:
@@ -75,9 +87,8 @@ def _format_page_selection(pages: list[int]) -> str:
     return ",".join(parts)
 
 
-def _thumb_pixmap(document, index: int, size: QSize) -> QPixmap:
-    """Render a single PDF page to a scaled pixmap (empty when it cannot be rendered)."""
-    image = document.render(index, size)
+def _scaled_pixmap(image: QImage, size: QSize) -> QPixmap:
+    """Turn a rendered QImage into a scaled QPixmap (GUI thread only)."""
     if image.isNull():
         return QPixmap()
     return QPixmap.fromImage(image).scaled(
@@ -88,44 +99,78 @@ def _thumb_pixmap(document, index: int, size: QSize) -> QPixmap:
     )
 
 
-class _ThumbnailRenderer:
-    """Render page thumbnails in small batches so dialogs open instantly.
+class _ThumbnailWorker(QObject):
+    """Loads a PDF and renders every page; lives entirely on a worker thread."""
 
-    Rendering every page synchronously makes large PDFs feel slow to open. Instead the
-    dialog is shown immediately with placeholders and thumbnails fill in over successive
-    event-loop ticks (a few at a time), keeping the UI responsive.
-    """
+    loaded = Signal(int)
+    rendered = Signal(int, QImage)
+    failed = Signal(str)
+    done = Signal()
 
-    def __init__(self, document, jobs, on_progress=None, chunk: int = 1) -> None:
-        self._document = document
-        self._jobs = jobs
-        self._on_progress = on_progress
-        self._chunk = chunk
-        self._index = 0
-        self._cancelled = False
-
-    def start(self) -> None:
-        if self._jobs:
-            QTimer.singleShot(0, self._step)
+    def __init__(self, path: str, size: QSize) -> None:
+        super().__init__()
+        self._path = path
+        self._size = size
+        self._stop = threading.Event()
 
     def cancel(self) -> None:
-        self._cancelled = True
+        self._stop.set()
 
-    def _step(self) -> None:
-        if self._cancelled:
+    @Slot()
+    def run(self) -> None:
+        if not _QT_PDF_AVAILABLE:
+            self.failed.emit("QtPdf is not available in this PySide6 build.")
+            self.done.emit()
             return
-        end = min(self._index + self._chunk, len(self._jobs))
-        for position in range(self._index, end):
-            try:
-                self._jobs[position]()
-            except Exception:  # noqa: BLE001
-                pass
-        self._index = end
-        if self._on_progress is not None:
-            self._on_progress(end, len(self._jobs))
-        if end < len(self._jobs):
-            # Yield to the event loop between pages so clicks and drags stay responsive.
-            QTimer.singleShot(0, self._step)
+        # Created and used only here, so the document never touches the GUI thread.
+        document = QPdfDocument()
+        try:
+            document.load(self._path)
+            page_count = document.pageCount()
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+            self.done.emit()
+            return
+        if page_count <= 0:
+            self.failed.emit("Could not load the PDF for previews.")
+            self.done.emit()
+            return
+        self.loaded.emit(page_count)
+        for index in range(page_count):
+            if self._stop.is_set():
+                break
+            image = document.render(index, self._size)
+            if not image.isNull():
+                self.rendered.emit(index, image)
+        self.done.emit()
+
+
+class PdfThumbnailLoader(QObject):
+    """Owns the worker thread that renders page thumbnails off the GUI thread."""
+
+    loaded = Signal(int)
+    rendered = Signal(int, QImage)
+    failed = Signal(str)
+
+    def __init__(self, path: str, size: QSize, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._thread = QThread()
+        self._worker = _ThumbnailWorker(path, size)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.loaded.connect(self.loaded)
+        self._worker.rendered.connect(self.rendered)
+        self._worker.failed.connect(self.failed)
+        self._worker.done.connect(self._thread.quit)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Cancel rendering and stop the thread (safe to call more than once)."""
+        self._worker.cancel()
+        self._thread.quit()
+        self._thread.wait(2000)
 
 
 class PdfPreview(QWidget):
@@ -164,14 +209,7 @@ class PdfPreview(QWidget):
             self.image.setPixmap(QPixmap())
             self.image.setText("(no preview)")
         else:
-            self.image.setPixmap(
-                QPixmap.fromImage(image).scaled(
-                    160,
-                    200,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
+            self.image.setPixmap(_scaled_pixmap(image, QSize(160, 200)))
         self.info.setText(f"{page_count} page(s)")
 
 
@@ -188,52 +226,31 @@ class PagePickerDialog(QDialog):
         self.setWindowTitle("Select pages")
         self.setMinimumSize(560, 480)
         self._boxes: list[QCheckBox] = []
-        self._renderer: _ThumbnailRenderer | None = None
+        self._thumbnails: list[QLabel] = []
+        self._preselected = _parse_spec_to_pages(preselected or "")
+        self._total = 0
+        self._rendered = 0
+        self._loader: PdfThumbnailLoader | None = None
 
         layout = QVBoxLayout(self)
-        self.progress = QLabel("")
+        self.progress = QLabel("Loading previews…")
         self.progress.setStyleSheet("color: #5f6368;")
         layout.addWidget(self.progress)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
-        grid = QGridLayout(content)
+        self._grid = QGridLayout(content)
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-        preselected_pages = _parse_spec_to_pages(preselected or "")
-        document = QPdfDocument() if _QT_PDF_AVAILABLE else None
-        page_count = 0
-        if document is not None:
-            document.load(path)
-            page_count = document.pageCount()
-
-        if page_count == 0:
+        if not _QT_PDF_AVAILABLE:
             self.progress.setText("Preview unavailable; enter the page range manually.")
         else:
-            columns = 4
-            jobs = []
-            for index in range(page_count):
-                cell = QWidget()
-                cell_layout = QVBoxLayout(cell)
-                cell_layout.setContentsMargins(4, 4, 4, 4)
-                thumbnail = QLabel("…")
-                thumbnail.setFixedSize(110, 140)
-                thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                thumbnail.setStyleSheet("border: 1px solid #dadce0; color: #9aa0a6;")
-                box = QCheckBox(str(index + 1))
-                box.setChecked((index + 1) in preselected_pages)
-                self._boxes.append(box)
-                cell_layout.addWidget(thumbnail)
-                cell_layout.addWidget(box)
-                grid.addWidget(cell, index // columns, index % columns)
-                jobs.append(
-                    lambda i=index, label=thumbnail: label.setPixmap(
-                        _thumb_pixmap(document, i, QSize(110, 140))
-                    )
-                )
-            self._renderer = _ThumbnailRenderer(document, jobs, self._update_progress)
-            self._renderer.start()
+            self._loader = PdfThumbnailLoader(path, _PICKER_THUMB)
+            self._loader.loaded.connect(self._on_loaded)
+            self._loader.rendered.connect(self._on_rendered)
+            self._loader.failed.connect(self._set_message)
+            self._loader.start()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -242,17 +259,51 @@ class PagePickerDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    @Slot(int)
+    def _on_loaded(self, page_count: int) -> None:
+        columns = 4
+        for index in range(page_count):
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(4, 4, 4, 4)
+            thumbnail = QLabel("…")
+            thumbnail.setFixedSize(_PICKER_THUMB)
+            thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            thumbnail.setStyleSheet("border: 1px solid #dadce0; color: #9aa0a6;")
+            box = QCheckBox(str(index + 1))
+            box.setChecked((index + 1) in self._preselected)
+            self._boxes.append(box)
+            self._thumbnails.append(thumbnail)
+            cell_layout.addWidget(thumbnail)
+            cell_layout.addWidget(box)
+            self._grid.addWidget(cell, index // columns, index % columns)
+        self._total = page_count
+        self._rendered = 0
+        self.progress.setText(f"Rendering previews… 0/{page_count}")
+
+    @Slot(int, QImage)
+    def _on_rendered(self, index: int, image: QImage) -> None:
+        if 0 <= index < len(self._thumbnails):
+            self._thumbnails[index].setPixmap(_scaled_pixmap(image, _PICKER_THUMB))
+        self._rendered += 1
+        self.progress.setText(
+            f"Rendering previews… {self._rendered}/{self._total}"
+            if self._rendered < self._total
+            else ""
+        )
+
+    @Slot(str)
+    def _set_message(self, message: str) -> None:
+        self.progress.setText(message)
+
     def selected_spec(self) -> str:
         return _format_page_selection(
             [index + 1 for index, box in enumerate(self._boxes) if box.isChecked()]
         )
 
-    def _update_progress(self, done: int, total: int) -> None:
-        self.progress.setText(f"Rendering previews… {done}/{total}" if done < total else "")
-
     def closeEvent(self, event) -> None:
-        if self._renderer is not None:
-            self._renderer.cancel()
+        if self._loader is not None:
+            self._loader.stop()
         super().closeEvent(event)
 
 
@@ -267,13 +318,15 @@ class PageReorderDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Reorder pages")
         self.setMinimumSize(640, 520)
-        self._renderer: _ThumbnailRenderer | None = None
+        self._loader: PdfThumbnailLoader | None = None
+        self._total = 0
+        self._rendered = 0
 
         layout = QVBoxLayout(self)
         hint = QLabel("Drag the thumbnails to set the new page order.")
         hint.setStyleSheet("color: #5f6368;")
         layout.addWidget(hint)
-        self.progress = QLabel("")
+        self.progress = QLabel("Loading previews…")
         self.progress.setStyleSheet("color: #5f6368;")
         layout.addWidget(self.progress)
 
@@ -283,7 +336,7 @@ class PageReorderDialog(QDialog):
         self.list.setWrapping(True)
         self.list.setResizeMode(QListView.ResizeMode.Adjust)
         self.list.setMovement(QListView.Movement.Static)
-        self.list.setIconSize(QSize(96, 128))
+        self.list.setIconSize(_REORDER_THUMB)
         self.list.setGridSize(QSize(120, 176))
         self.list.setUniformItemSizes(True)
         self.list.setWordWrap(True)
@@ -306,30 +359,14 @@ class PageReorderDialog(QDialog):
         controls.addStretch(1)
         layout.addLayout(controls)
 
-        document = QPdfDocument() if _QT_PDF_AVAILABLE else None
-        page_count = 0
-        if document is not None:
-            document.load(path)
-            page_count = document.pageCount()
-
-        if page_count == 0:
+        if not _QT_PDF_AVAILABLE:
             self.progress.setText("Thumbnails unavailable; reordering needs QtPdf.")
         else:
-            jobs = []
-            for index in range(page_count):
-                item = QListWidgetItem(str(index + 1))
-                item.setData(Qt.ItemDataRole.UserRole, index + 1)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
-                # Pin the size so hit-testing stays correct when icons arrive later.
-                item.setSizeHint(QSize(120, 176))
-                self.list.addItem(item)
-                jobs.append(
-                    lambda i=index, it=item: it.setIcon(
-                        QIcon(_thumb_pixmap(document, i, QSize(96, 128)))
-                    )
-                )
-            self._renderer = _ThumbnailRenderer(document, jobs, self._update_progress)
-            self._renderer.start()
+            self._loader = PdfThumbnailLoader(path, _REORDER_THUMB)
+            self._loader.loaded.connect(self._on_loaded)
+            self._loader.rendered.connect(self._on_rendered)
+            self._loader.failed.connect(self._set_message)
+            self._loader.start()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -338,8 +375,34 @@ class PageReorderDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _update_progress(self, done: int, total: int) -> None:
-        self.progress.setText(f"Rendering previews… {done}/{total}" if done < total else "")
+    @Slot(int)
+    def _on_loaded(self, page_count: int) -> None:
+        for index in range(page_count):
+            item = QListWidgetItem(str(index + 1))
+            item.setData(Qt.ItemDataRole.UserRole, index + 1)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+            # Pin the size so hit-testing stays correct while icons stream in.
+            item.setSizeHint(QSize(120, 176))
+            self.list.addItem(item)
+        self._total = page_count
+        self._rendered = 0
+        self.progress.setText(f"Rendering previews… 0/{page_count}")
+
+    @Slot(int, QImage)
+    def _on_rendered(self, index: int, image: QImage) -> None:
+        item = self.list.item(index)
+        if item is not None:
+            item.setIcon(QIcon(_scaled_pixmap(image, _REORDER_THUMB)))
+        self._rendered += 1
+        self.progress.setText(
+            f"Rendering previews… {self._rendered}/{self._total}"
+            if self._rendered < self._total
+            else ""
+        )
+
+    @Slot(str)
+    def _set_message(self, message: str) -> None:
+        self.progress.setText(message)
 
     def _move_selected(self, offset: int) -> None:
         row = self.list.currentRow()
@@ -357,6 +420,7 @@ class PageReorderDialog(QDialog):
         )
 
     def closeEvent(self, event) -> None:
-        if self._renderer is not None:
-            self._renderer.cancel()
+        if self._loader is not None:
+            self._loader.stop()
         super().closeEvent(event)
+

@@ -66,6 +66,13 @@ def test_menu_bar_and_status_extras(qtbot):
     assert window.open_folder_button.text() == "Open folder"
 
 
+def test_window_accepts_dropped_pdfs(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    # Window-level drag-to-open: the main window accepts URL drops.
+    assert window.acceptDrops() is True
+
+
 def test_existing_file_from_input_reports_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         _existing_file_from_input(str(tmp_path / "missing.pdf"), "Input PDF")

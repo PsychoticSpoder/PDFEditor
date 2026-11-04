@@ -340,6 +340,26 @@ def test_page_picker_dialog_selected_spec(qtbot, make_pdf):
     assert dialog.selected_spec() == "1,3"
 
 
+def test_page_reorder_dialog_grid_toggle(qtbot, make_pdf):
+    from pdfeditor.gui.preview import PageReorderDialog, qtpdf_available
+
+    if not qtpdf_available():
+        pytest.skip("QtPdf not available")
+
+    src = make_pdf(pages=3)
+    dialog = PageReorderDialog(str(src))
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(lambda: dialog.list.count() == 3, timeout=5000)
+
+    # Grid by default; the toggle switches to a list without losing the items.
+    assert dialog.list.is_grid() is True
+    dialog.grid_toggle.setChecked(False)
+    assert dialog.list.is_grid() is False
+    assert dialog.order_spec() == "1,2,3"
+    dialog.grid_toggle.setChecked(True)
+    assert dialog.list.is_grid() is True
+
+
 def test_reorder_pick_button_present(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)

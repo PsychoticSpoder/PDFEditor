@@ -45,7 +45,8 @@ except ImportError:  # pragma: no cover
 
 # Thumbnail render sizes
 _PICKER_THUMB = QSize(110, 140)
-_REORDER_THUMB = QSize(64, 84)
+_REORDER_THUMB = QSize(64, 84)  # list-mode row icon
+_REORDER_GRID_THUMB = QSize(96, 128)  # grid-mode icon
 _REORDER_ROW_HEIGHT = 92
 
 
@@ -310,23 +311,54 @@ class PagePickerDialog(QDialog):
 
 
 class _ReorderListWidget(QListWidget):
-    """A single-column list whose rows are reordered by dragging.
+    """A reorderable list that works in both grid (icon) and list modes.
 
-    Reordering is driven directly from mouse events (rather than Qt's drag-and-drop
-    machinery) so it works reliably regardless of platform/theme: while the left button
-    is held, the row under the pointer is moved to follow it.
+    Reordering is driven directly from mouse events rather than Qt's drag-and-drop
+    machinery, so it works reliably regardless of platform/theme: while the left button
+    is held, the item under the pointer is moved to follow it. The only per-mode
+    difference is how a pointer position maps to a target index.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, grid: bool = True) -> None:
         super().__init__()
-        self.setViewMode(QListView.ViewMode.ListMode)
-        self.setIconSize(_REORDER_THUMB)
         self.setUniformItemSizes(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self._grid = grid
+        self._item_size = QSize(0, _REORDER_ROW_HEIGHT)
         self._drag_row: int | None = None
         self._press_pos = None
+        self._apply_mode()
+
+    def _apply_mode(self) -> None:
+        if self._grid:
+            self.setViewMode(QListView.ViewMode.IconMode)
+            self.setFlow(QListView.Flow.LeftToRight)
+            self.setWrapping(True)
+            self.setResizeMode(QListView.ResizeMode.Adjust)
+            self.setIconSize(_REORDER_GRID_THUMB)
+            self._item_size = QSize(120, 176)
+        else:
+            self.setViewMode(QListView.ViewMode.ListMode)
+            self.setFlow(QListView.Flow.TopToBottom)
+            self.setWrapping(False)
+            self.setIconSize(_REORDER_THUMB)
+            self._item_size = QSize(0, _REORDER_ROW_HEIGHT)
+        self.setMovement(QListView.Movement.Static)
+        for row in range(self.count()):
+            self.item(row).setSizeHint(self._item_size)
+
+    def is_grid(self) -> bool:
+        return self._grid
+
+    def set_grid(self, grid: bool) -> None:
+        if grid != self._grid:
+            self._grid = grid
+            self._apply_mode()
+
+    def item_size(self) -> QSize:
+        return QSize(self._item_size)
 
     def move_row_to(self, row: int, target: int) -> bool:
         """Move the item at ``row`` to index ``target``; return True if it moved."""
@@ -343,13 +375,26 @@ class _ReorderListWidget(QListWidget):
         self.setCurrentItem(item)
         return True
 
-    def _row_at(self, pos) -> int | None:
+    def _target_index(self, pos) -> int | None:
+        """Index of the item under ``pos`` (or nearest centre) for a drop."""
+        count = self.count()
+        if count == 0:
+            return None
         item = self.itemAt(pos)
         if item is not None:
             return self.row(item)
-        if self.count() and pos.y() > self.visualItemRect(self.item(self.count() - 1)).center().y():
-            return self.count() - 1
-        return None
+        best_row: int | None = None
+        best_distance: int | None = None
+        for row in range(count):
+            rect = self.visualItemRect(self.item(row))
+            if not rect.isValid():
+                continue
+            center = rect.center()
+            distance = (center.x() - pos.x()) ** 2 + (center.y() - pos.y()) ** 2
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_row = row
+        return best_row
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -370,8 +415,12 @@ class _ReorderListWidget(QListWidget):
         if (pos - self._press_pos).manhattanLength() < QApplication.startDragDistance():
             super().mouseMoveEvent(event)
             return
-        target = self._row_at(pos)
-        if target is not None and target != self._drag_row and self.move_row_to(self._drag_row, target):
+        target = self._target_index(pos)
+        if (
+            target is not None
+            and target != self._drag_row
+            and self.move_row_to(self._drag_row, target)
+        ):
             self._drag_row = target
         event.accept()
 
@@ -404,16 +453,21 @@ class PageReorderDialog(QDialog):
         self.progress.setStyleSheet("color: #5f6368;")
         layout.addWidget(self.progress)
 
-        self.list = _ReorderListWidget()
+        self.list = _ReorderListWidget(grid=True)
         layout.addWidget(self.list)
 
         controls = QHBoxLayout()
         earlier_button = QPushButton("Move Earlier")
         later_button = QPushButton("Move Later")
+        self.grid_toggle = QCheckBox("Grid view")
+        self.grid_toggle.setChecked(True)
+        self.grid_toggle.toggled.connect(self._on_grid_toggled)
         earlier_button.clicked.connect(lambda: self._move_selected(-1))
         later_button.clicked.connect(lambda: self._move_selected(1))
         controls.addWidget(earlier_button)
         controls.addWidget(later_button)
+        controls.addSpacing(12)
+        controls.addWidget(self.grid_toggle)
         controls.addStretch(1)
         layout.addLayout(controls)
 
@@ -438,8 +492,8 @@ class PageReorderDialog(QDialog):
         for index in range(page_count):
             item = QListWidgetItem(f"Page {index + 1}")
             item.setData(Qt.ItemDataRole.UserRole, index + 1)
-            # Pin the row height so hit-testing stays correct while icons stream in.
-            item.setSizeHint(QSize(0, _REORDER_ROW_HEIGHT))
+            # Pin the row/cell size so hit-testing stays correct while icons stream in.
+            item.setSizeHint(self.list.item_size())
             self.list.addItem(item)
         self._total = page_count
         self._rendered = 0
@@ -449,7 +503,7 @@ class PageReorderDialog(QDialog):
     def _on_rendered(self, index: int, image: QImage) -> None:
         item = self.list.item(index)
         if item is not None:
-            item.setIcon(QIcon(_scaled_pixmap(image, _REORDER_THUMB)))
+            item.setIcon(QIcon(_scaled_pixmap(image, _REORDER_GRID_THUMB)))
         self._rendered += 1
         self.progress.setText(
             f"Rendering previews… {self._rendered}/{self._total}"
@@ -460,6 +514,9 @@ class PageReorderDialog(QDialog):
     @Slot(str)
     def _set_message(self, message: str) -> None:
         self.progress.setText(message)
+
+    def _on_grid_toggled(self, checked: bool) -> None:
+        self.list.set_grid(checked)
 
     def _move_selected(self, offset: int) -> None:
         self.list.move_row_to(self.list.currentRow(), self.list.currentRow() + offset)

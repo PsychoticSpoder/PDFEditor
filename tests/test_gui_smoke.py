@@ -96,6 +96,13 @@ def test_operation_panel_wires_input_output_and_run(qtbot, tmp_path):
     assert calls == [True]
 
 
+def test_fullscreen_toggle_available(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.fullscreen_action.isCheckable()
+    assert window.fullscreen_action.shortcut().toString() == "F11"
+
+
 def test_existing_file_from_input_reports_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         _existing_file_from_input(str(tmp_path / "missing.pdf"), "Input PDF")

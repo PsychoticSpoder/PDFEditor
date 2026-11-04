@@ -184,6 +184,11 @@ class MainWindow(QMainWindow):
         quit_action = file_menu.addAction("&Quit")
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
+        view_menu = self.menuBar().addMenu("&View")
+        self.fullscreen_action = view_menu.addAction("&Full Screen")
+        self.fullscreen_action.setCheckable(True)
+        self.fullscreen_action.setShortcut("F11")
+        self.fullscreen_action.toggled.connect(self._toggle_fullscreen)
         help_menu = self.menuBar().addMenu("&Help")
         about_action = help_menu.addAction("&About")
         about_action.triggered.connect(self._show_about)
@@ -300,6 +305,13 @@ class MainWindow(QMainWindow):
             "About PDF Editor Tool",
             "A small toolkit to edit, split, combine, convert and batch-process PDFs.",
         )
+
+    def _toggle_fullscreen(self, enabled: bool) -> None:
+        """Switch between true full-screen (F11) and a maximized window."""
+        if enabled:
+            self.showFullScreen()
+        else:
+            self.showMaximized()
 
     def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
         """Keep a PageRangeField's page-count hint in sync with the input PDF."""
@@ -1152,5 +1164,5 @@ def main() -> int:
     app = QApplication(sys.argv)
     apply_theme(app)
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     return app.exec()

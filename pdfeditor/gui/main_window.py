@@ -313,24 +313,31 @@ class MainWindow(QMainWindow):
         else:
             self.showMaximized()
 
-    def _pick_reorder(self) -> None:
-        """Open the drag-to-reorder thumbnail dialog for the current input PDF."""
-        text = self.reorder_input.text().strip()
-        if not text:
-            self._show_error(ValueError("Load an input PDF first."))
-            return
+    def choose_order_and_reorder(self) -> None:
+        """Open the drag-to-reorder dialog, then write the reordered PDF.
+
+        The page order is never typed by hand: you drag the pages in the preview grid
+        and the resulting order is applied straight away, so one click on the panel
+        button both chooses the order and produces the output file.
+        """
         try:
-            path = _existing_file_from_input(text, "Input PDF")
+            input_file = _existing_file_from_input(self.reorder_input.text(), "Input PDF")
+            output_file = _output_file_from_input(self.reorder_output.text(), "Output PDF")
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
             return
         from .preview import PageReorderDialog
 
-        dialog = PageReorderDialog(str(path), self)
-        if dialog.exec():
-            spec = dialog.order_spec()
-            if spec:
-                self.reorder_order.setText(spec)
+        dialog = PageReorderDialog(str(input_file), self)
+        if not dialog.exec():
+            return
+        spec = dialog.order_spec()
+        if not spec:
+            return
+        self._run_async(
+            lambda: reorder_pages(input_file, output_file, spec),
+            "Reorder complete.",
+        )
 
     def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
         """Keep a PageRangeField's page-count hint in sync with the input PDF."""
@@ -393,21 +400,15 @@ class MainWindow(QMainWindow):
         )
         self.delete_panel.run_requested.connect(self.run_delete_pages)
 
-        self.reorder_panel = OperationPanel("Reorder Pages", "Reorder", source_suffix="_reordered")
+        # Reordering is driven entirely by the drag-and-drop dialog, so there is no
+        # hand-typed page-order field: the single button opens the preview grid and
+        # applies whatever order you drag the pages into.
+        self.reorder_panel = OperationPanel(
+            "Reorder Pages", "Choose order & reorder…", source_suffix="_reordered"
+        )
         self.reorder_input = self.reorder_panel.input_edit
         self.reorder_output = self.reorder_panel.output_edit
-        self.reorder_order = QLineEdit()
-        self.reorder_order.setPlaceholderText("Required full order, e.g. 3,1,2")
-        self.reorder_pick_button = QPushButton("Reorder…")
-        self.reorder_pick_button.setToolTip("Drag page thumbnails to set the order")
-        self.reorder_pick_button.clicked.connect(self._pick_reorder)
-        order_row_widget = QWidget()
-        order_row = QHBoxLayout(order_row_widget)
-        order_row.setContentsMargins(0, 0, 0, 0)
-        order_row.addWidget(self.reorder_order, stretch=1)
-        order_row.addWidget(self.reorder_pick_button)
-        self.reorder_panel.add_param("Order", order_row_widget)
-        self.reorder_panel.run_requested.connect(self.run_reorder)
+        self.reorder_panel.run_requested.connect(self.choose_order_and_reorder)
 
         self.extract_panel = OperationPanel(
             "Extract Pages", "Extract to New PDF", source_suffix="_extracted"
@@ -862,20 +863,6 @@ class MainWindow(QMainWindow):
             self._run_async(
                 lambda: delete_page_range(input_file, output_file, pages),
                 "Delete pages complete.",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._show_error(exc)
-
-    def run_reorder(self) -> None:
-        try:
-            input_file = _existing_file_from_input(self.reorder_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.reorder_output.text(), "Output PDF")
-            order = self.reorder_order.text().strip()
-            if not order:
-                raise ValueError("Page order is required.")
-            self._run_async(
-                lambda: reorder_pages(input_file, output_file, order),
-                "Reorder complete.",
             )
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)

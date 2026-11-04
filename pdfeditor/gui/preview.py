@@ -362,13 +362,7 @@ class _ReorderListWidget(QListWidget):
 
     def move_row_to(self, row: int, target: int) -> bool:
         """Move the item at ``row`` to index ``target``; return True if it moved."""
-        if (
-            row == target
-            or row < 0
-            or target < 0
-            or row >= self.count()
-            or target >= self.count()
-        ):
+        if row == target or row < 0 or target < 0 or row >= self.count() or target >= self.count():
             return False
         item = self.takeItem(row)
         self.insertItem(target, item)
@@ -446,7 +440,7 @@ class PageReorderDialog(QDialog):
         self._rendered = 0
 
         layout = QVBoxLayout(self)
-        hint = QLabel("Drag the thumbnails to set the new page order.")
+        hint = QLabel("Drag pages to their new positions, then click Apply order.")
         hint.setStyleSheet("color: #5f6368;")
         layout.addWidget(hint)
         self.progress = QLabel("Loading previews…")
@@ -485,6 +479,7 @@ class PageReorderDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Apply order")
         layout.addWidget(buttons)
 
     @Slot(int)
@@ -531,4 +526,3 @@ class PageReorderDialog(QDialog):
         if self._loader is not None:
             self._loader.stop()
         super().closeEvent(event)
-

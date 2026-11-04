@@ -253,18 +253,14 @@ def test_page_reorder_dialog_items_are_laid_out(qtbot, make_pdf):
     before = item_positions()
     assert all(rect[2] > 0 and rect[3] > 0 for rect in before)
     assert len({(rect[0], rect[1]) for rect in before}) == 4
-    assert all(
-        viewport.contains(dialog.list.visualItemRect(dialog.list.item(i))) for i in range(4)
-    )
+    assert all(viewport.contains(dialog.list.visualItemRect(dialog.list.item(i))) for i in range(4))
 
     # Thumbnails arrive from the worker thread; layout/hit-testing must stay correct.
     qtbot.waitUntil(lambda: not dialog.list.item(0).icon().isNull(), timeout=5000)
     after = item_positions()
     assert all(rect[2] > 0 and rect[3] > 0 for rect in after)
     assert len({(rect[0], rect[1]) for rect in after}) == 4
-    assert all(
-        viewport.contains(dialog.list.visualItemRect(dialog.list.item(i))) for i in range(4)
-    )
+    assert all(viewport.contains(dialog.list.visualItemRect(dialog.list.item(i))) for i in range(4))
 
 
 def test_page_reorder_dialog_move_buttons(qtbot, make_pdf):
@@ -360,10 +356,13 @@ def test_page_reorder_dialog_grid_toggle(qtbot, make_pdf):
     assert dialog.list.is_grid() is True
 
 
-def test_reorder_pick_button_present(qtbot):
+def test_reorder_panel_has_single_action(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
-    assert window.reorder_pick_button.text().startswith("Reorder")
+    # No hand-typed order field: one button opens the drag dialog and applies the order.
+    assert window.reorder_panel.run_button.text().startswith("Choose order")
+    assert not hasattr(window, "reorder_order")
+    assert not hasattr(window, "reorder_pick_button")
 
 
 def test_edit_tab_has_parity_controls(qtbot):

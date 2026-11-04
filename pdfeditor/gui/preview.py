@@ -213,46 +213,6 @@ class PdfThumbnailLoader(QObject):
         self._thread.wait(2000)
 
 
-class PdfPreview(QWidget):
-    """A small first-page preview with a page count."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.image = QLabel("No document")
-        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setFixedSize(160, 200)
-        self.image.setStyleSheet("border: 1px solid #dadce0; background: #f8f9fa;")
-        self.info = QLabel("")
-        self.info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.info.setStyleSheet("color: #5f6368;")
-        layout.addWidget(self.image)
-        layout.addWidget(self.info)
-
-    def set_document(self, path: str | None) -> None:
-        if not _QT_PDF_AVAILABLE or not path:
-            self.image.setPixmap(QPixmap())
-            self.image.setText("Preview unavailable")
-            self.info.setText("")
-            return
-        document = QPdfDocument()
-        document.load(path)
-        page_count = document.pageCount()
-        if page_count <= 0:
-            self.image.setPixmap(QPixmap())
-            self.image.setText("Could not load PDF")
-            self.info.setText("")
-            return
-        image = document.render(0, QSize(160, 200))
-        if image.isNull():
-            self.image.setPixmap(QPixmap())
-            self.image.setText("(no preview)")
-        else:
-            self.image.setPixmap(_scaled_pixmap(image, QSize(160, 200)))
-        self.info.setText(f"{page_count} page(s)")
-
-
 class PagePickerDialog(QDialog):
     """A thumbnail grid for choosing pages, returning a range string."""
 

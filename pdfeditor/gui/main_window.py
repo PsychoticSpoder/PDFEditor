@@ -51,10 +51,8 @@ from ..core import (
     print_pdf,
 )
 from .organizer import PageOrganizerWidget
-from .preview import PdfPreview
 from .theme import apply_theme
 from .widgets import (
-    DropLineEdit,
     OrderedFileList,
     _directory_row,
     _existing_dir_from_input,
@@ -68,8 +66,7 @@ from .workers import BatchWorker, SingleOpWorker
 
 logger = logging.getLogger(__name__)
 
-#: The "Single PDF Editing" panel is first in the sidebar and the only one that needs the
-#: shared "Current PDF" bar.
+#: The "Single PDF Editing" panel (the page organizer) is first in the sidebar.
 _SINGLE_PDF_ROW = 0
 
 
@@ -101,33 +98,17 @@ class MainWindow(QMainWindow):
         header.setStyleSheet("font-size: 16px; font-weight: 600;")
         root_layout.addWidget(header)
 
-        hint = QLabel("Tip: open a PDF once below, or drag files/folders into any field.")
+        hint = QLabel(
+            "Tip: open a PDF in the Single PDF Editing panel, or drag files/folders into "
+            "any field."
+        )
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet("color: #666666;")
         root_layout.addWidget(hint)
 
-        # The shared "current document" bar. It is only needed by the Single PDF Editing
-        # panel, so it hides itself whenever another panel is selected.
+        # Dropping a PDF onto the window opens it in the Single PDF Editing panel, which owns
+        # the only file picker now — there is no separate "current document" bar.
         self.setAcceptDrops(True)
-        self.document_bar = QWidget()
-        doc_row = QHBoxLayout(self.document_bar)
-        doc_row.setContentsMargins(0, 0, 0, 0)
-        self.current_document = DropLineEdit()
-        self.current_document.setPlaceholderText("Drop or open a PDF to reuse across operations")
-        self.current_document.textChanged.connect(self._on_current_document_changed)
-        open_button = QPushButton("Open PDF")
-        open_button.clicked.connect(self._choose_current_document)
-        self.recent_combo = QComboBox()
-        self.recent_combo.setMinimumWidth(150)
-        self.recent_combo.activated.connect(self._on_recent_selected)
-        self.preview = PdfPreview()
-        doc_row.addWidget(QLabel("Current PDF"))
-        doc_row.addWidget(self.current_document, stretch=1)
-        doc_row.addWidget(open_button)
-        doc_row.addWidget(self.recent_combo)
-        doc_row.addWidget(self.preview)
-        root_layout.addWidget(self.document_bar)
-        self._refresh_recent_combo()
 
         # Left action sidebar + a stack of operation panels (document-centric IA).
         self.panel_list = QListWidget()
@@ -147,9 +128,8 @@ class MainWindow(QMainWindow):
             self.panel_list.addItem(label)
             self.panel_stack.addWidget(_scrollable(panel) if scrollable else panel)
 
-        self.panel_list.currentRowChanged.connect(self._on_panel_selected)
+        self.panel_list.currentRowChanged.connect(self.panel_stack.setCurrentIndex)
         self.panel_list.setCurrentRow(_SINGLE_PDF_ROW)
-        self._on_panel_selected(_SINGLE_PDF_ROW)
 
         panels_row = QHBoxLayout()
         panels_row.addWidget(self.panel_list)
@@ -178,7 +158,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         open_action = file_menu.addAction("&Open PDF...")
         open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self._choose_current_document)
+        open_action.triggered.connect(self.open_pdf)
         organize_action = file_menu.addAction("&Organize Pages...")
         organize_action.setShortcut("Ctrl+Shift+O")
         organize_action.triggered.connect(self.open_page_organizer)
@@ -223,40 +203,19 @@ class MainWindow(QMainWindow):
         self.single_pdf_panel.close_document()
         super().closeEvent(event)
 
-    def _recent_documents(self) -> list[str]:
-        value = self._settings.value("recent_documents", [])
-        if isinstance(value, str):
-            return [value] if value else []
-        return [str(item) for item in (value or [])]
-
-    def _refresh_recent_combo(self) -> None:
-        self.recent_combo.blockSignals(True)
-        self.recent_combo.clear()
-        self.recent_combo.addItem("Recent...", "")
-        for path in self._recent_documents():
-            self.recent_combo.addItem(Path(path).name, path)
-        self.recent_combo.blockSignals(False)
-
-    def _remember_document(self, path: str) -> None:
-        recents = [item for item in self._recent_documents() if item != path]
-        recents.insert(0, path)
-        self._settings.setValue("recent_documents", recents[:10])
-        self._refresh_recent_combo()
-
-    def _on_recent_selected(self, index: int) -> None:
-        path = self.recent_combo.itemData(index)
-        if path:
-            self.current_document.setText(str(path))
-
-    def _on_panel_selected(self, row: int) -> None:
-        """Show the chosen panel; the "Current PDF" bar only matters for the organizer."""
-        self.panel_stack.setCurrentIndex(row)
-        self.document_bar.setVisible(row == _SINGLE_PDF_ROW)
-
-    def _choose_current_document(self) -> None:
+    def open_pdf(self) -> None:
+        """Ask for a PDF and open it in the Single PDF Editing panel."""
         file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
         if file_name:
-            self.current_document.setText(file_name)
+            self.open_document(file_name)
+
+    def open_document(self, path: str) -> None:
+        """Show the Single PDF Editing panel and open ``path`` in it.
+
+        Used by File → Open PDF, and by dropping a PDF onto the window.
+        """
+        self.panel_list.setCurrentRow(_SINGLE_PDF_ROW)
+        self.single_pdf_panel.load(path)
 
     def open_page_organizer(self) -> None:
         """Open the organizer in its own window, on the current document when there is one.
@@ -266,7 +225,7 @@ class MainWindow(QMainWindow):
         """
         from .organizer import PageOrganizerDialog
 
-        current = self.current_document.text().strip()
+        current = self.single_pdf_panel.file_edit.text().strip()
         dialog = PageOrganizerDialog(current or None, self)
         dialog.exec()
         saved = dialog.saved_path()
@@ -277,18 +236,6 @@ class MainWindow(QMainWindow):
         """Report an organizer Save As in the shared status bar."""
         self.status.showMessage(f"Saved organized PDF: {path}")
 
-    def _on_current_document_changed(self, text: str) -> None:
-        path = text.strip()
-        self.preview.set_document(path or None)
-        if not path:
-            return
-        # The current document is what the single-PDF organizer edits; it also saves
-        # re-picking the file in the Print panel.
-        self.print_input.setText(path)
-        self.single_pdf_panel.file_edit.setText(path)
-        self.panel_list.setCurrentRow(_SINGLE_PDF_ROW)
-        self._remember_document(path)
-
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -298,13 +245,14 @@ class MainWindow(QMainWindow):
     def dropEvent(self, event) -> None:
         urls = [url for url in event.mimeData().urls() if url.isLocalFile()]
         if urls:
-            self.current_document.setText(urls[0].toLocalFile())
+            self.open_document(urls[0].toLocalFile())
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
 
     def _open_current_folder(self) -> None:
-        text = self.current_document.text().strip()
+        """Open the folder of the PDF the Single PDF Editing panel has loaded."""
+        text = self.single_pdf_panel.file_edit.text().strip()
         if not text:
             return
         folder = Path(text).expanduser().parent

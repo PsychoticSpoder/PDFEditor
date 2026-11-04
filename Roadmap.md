@@ -222,6 +222,10 @@ The project is now an installable `pdfeditor` package:
   - [x] `PdfThumbnailLoader` keeps itself alive until its worker thread really stops, so a
         render can never outlive the widget that asked for it (Qt aborts if a running
         QThread is destroyed).
+  - [x] Removed the shared "Current PDF" bar (field, Open PDF button, recent-documents
+        dropdown and the `PdfPreview` first-page thumbnail): the panel's own "PDF to edit" row
+        is now the single file picker, and File → Open PDF (`Ctrl+O`) or dropping a PDF onto
+        the window loads it there.
 
 ### 10.4 Key artifacts
 
@@ -229,7 +233,7 @@ The project is now an installable `pdfeditor` package:
 |--------|----------|
 | `pdfeditor/gui/widgets.py` | `DropLineEdit`, `PathRow`, `OutputRow`, `OperationPanel`, `PageRangeField`, `OrderedFileList`, `PageGridWidget` |
 | `pdfeditor/gui/workers.py` | `BatchWorker`, `SingleOpWorker` (+ cancellation) |
-| `pdfeditor/gui/preview.py` | `PdfPreview`, `PagePickerDialog`, `PageReorderDialog` (QtPdf) |
+| `pdfeditor/gui/preview.py` | `PdfThumbnailLoader`, `PagePickerDialog`, `PageReorderDialog` (QtPdf) |
 | `pdfeditor/gui/organizer.py` | `PageOrganizerDialog`, `MetadataDialog`, `WatermarkDialog` |
 | `pdfeditor/core/organizer.py` | `PageOrganizerDocument` (working-copy editing session) |
 | `pdfeditor/gui/theme.py` | `apply_theme(app)` |

@@ -167,8 +167,8 @@ The GUI is a list of panels down the left:
 - **Batch**: Process entire folders
 - **Print**: Print PDFs to default printer
 
-The **Current PDF** bar is only shown while the Single PDF Editing panel is selected, and
-**File → Open PDF…** (`Ctrl+O`) opens a document straight into it.
+The **Current PDF** bar is gone: the Single PDF Editing panel's own "PDF to edit" row is the
+file picker. **File → Open PDF…** (`Ctrl+O`) or dropping a PDF onto the window loads it there.
 
 ### Page organizer
 

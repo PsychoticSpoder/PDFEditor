@@ -44,19 +44,17 @@ def test_format_and_parse_page_selection():
     assert _parse_spec_to_pages("") == set()
 
 
-def test_current_document_loads_into_the_single_pdf_panel(qtbot, make_pdf):
+def test_open_document_loads_the_editing_panel(qtbot, make_pdf):
     src = make_pdf(pages=3)
 
     window = MainWindow()
     qtbot.addWidget(window)
-    window.current_document.setText(str(src))
+    window.open_document(str(src))
 
-    # Opening a PDF switches to the editing panel, which takes over the document...
+    # Opening a PDF selects the Single PDF Editing panel and loads it there.
     assert window.panel_stack.currentIndex() == 0
     assert window.single_pdf_panel.file_edit.text() == str(src)
     assert window.single_pdf_panel.document is not None
-    # ...and the Print panel still gets it as well.
-    assert window.print_input.text() == str(src)
 
 
 def test_menu_bar_and_status_extras(qtbot):
@@ -380,18 +378,16 @@ def test_single_pdf_panel_embeds_the_organizer(qtbot):
         assert not hasattr(window, removed)
 
 
-def test_current_pdf_bar_only_shows_for_the_editing_panel(qtbot):
+def test_the_shared_current_pdf_bar_is_gone(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
 
-    # Shown for the Single PDF Editing panel (row 0)...
+    # The panel's own "PDF to edit" row replaced the Current PDF bar, its Open PDF button,
+    # the recent-documents dropdown and the first-page preview.
+    for removed in ("document_bar", "current_document", "recent_combo", "preview"):
+        assert not hasattr(window, removed)
+    assert window.single_pdf_panel.file_edit.placeholderText().startswith("Drop or choose")
     assert window.panel_list.currentRow() == 0
-    assert window.document_bar.isHidden() is False
-
-    # ...and hidden for every other panel.
-    window.panel_list.setCurrentRow(1)
-    assert window.panel_stack.currentIndex() == 1
-    assert window.document_bar.isHidden() is True
 
 
 def test_batch_dry_run_lists_files(qtbot, tmp_path):

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfeditor"
+version = "0.1.0"
+description = "Edit, split, combine, convert, print and batch-process PDF files."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "pypdf>=4.2.0",
+    "Pillow>=10.3.0",
+    "reportlab>=4.2.0",
+    "PySide6>=6.7.0",
+    "pywin32>=306; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+
+[project.scripts]
+pdf-tool = "pdfeditor.cli:main"
+
+[project.gui-scripts]
+pdf-editor-gui = "pdfeditor.gui:main"
+
+[tool.setuptools]
+packages = ["pdfeditor", "pdfeditor.core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["pdfeditor"]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true

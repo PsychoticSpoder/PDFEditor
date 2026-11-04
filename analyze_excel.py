@@ -1,6 +1,8 @@
 """Diagnostic script to analyze Excel file structure and identify page break issues."""
-import win32com.client as win32
+import sys
 from pathlib import Path
+
+import win32com.client as win32
 
 def analyze_excel_file(file_path: str):
     """Analyze an Excel file to understand its structure and print settings."""
@@ -189,12 +191,19 @@ def analyze_excel_file(file_path: str):
     print(f"{'='*80}\n")
 
 
-if __name__ == "__main__":
-    # Test file path - update this to your file
-    file_path = r"C:\Users\SESA641998\Downloads\Compass ORD Building 1 MSB FTPs XLSX\EY1-PC1A-MSB - 51174010-000250 - MSB FTP.xlsx"
-    
-    if Path(file_path).exists():
-        analyze_excel_file(file_path)
-    else:
+def _main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("Usage: python analyze_excel.py <path-to-excel-file>")
+        return 2
+
+    file_path = Path(argv[1]).expanduser()
+    if not file_path.exists():
         print(f"File not found: {file_path}")
-        print("Please update the file_path variable in this script to point to your Excel file.")
+        return 1
+
+    analyze_excel_file(str(file_path))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv))

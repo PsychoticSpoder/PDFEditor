@@ -1,0 +1,181 @@
+"""Path validation, file discovery, and parallel-processing helpers."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+import os
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Callable, TypeVar
+
+T = TypeVar("T")
+OfficeProgressCallback = Callable[[int, int, Path, str], None]
+
+
+
+def _validate_existing_file(path_text: str) -> Path:
+    path = Path(path_text).expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+    return path
+
+
+def _validate_output_path(path_text: str) -> Path:
+    path = Path(path_text).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _validate_output_dir(path_text: str) -> Path:
+    path = Path(path_text).expanduser().resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _validate_existing_dir(path_text: str) -> Path:
+    path = Path(path_text).expanduser().resolve()
+    if not path.exists() or not path.is_dir():
+        raise FileNotFoundError(f"Directory not found: {path}")
+    return path
+
+
+def _collect_input_files(input_dir: Path, pattern: str) -> list[Path]:
+    """Collect files from a directory matching the given pattern.
+    
+    Args:
+        input_dir: Directory to search for files.
+        pattern: Glob pattern for file matching (e.g., "*.pdf").
+    
+    Returns:
+        Sorted list of matching file paths.
+    
+    Raises:
+        ValueError: If no files match the pattern.
+    """
+    file_pattern = pattern.strip() if pattern.strip() else "*.pdf"
+    files = sorted(path for path in input_dir.glob(file_pattern) if path.is_file())
+    if not files:
+        raise ValueError(f"No files matched pattern '{file_pattern}' in: {input_dir}")
+    return files
+
+
+def _is_office_temp_file(path: Path) -> bool:
+    name = path.name
+    return name.startswith("~$") or path.suffix.lower() in {".tmp", ".wbk", ".asd"}
+
+
+def _filter_office_batch_files(files: list[Path]) -> list[Path]:
+    # Ignore Office lock/temp files that are not real source documents.
+    filtered = [path for path in files if not _is_office_temp_file(path)]
+    if not filtered:
+        raise ValueError("No valid Office source files found after filtering temp/lock files.")
+    return filtered
+
+
+def _ensure_pdf_output(output_file: Path) -> None:
+    if not output_file.exists() or not output_file.is_file():
+        raise RuntimeError(f"Expected output file was not created: {output_file}")
+
+    with output_file.open("rb") as stream:
+        header = stream.read(5)
+
+    if not header.startswith(b"%PDF"):
+        raise RuntimeError(
+            f"Office export did not produce a valid PDF for: {output_file}. "
+            "Use single-worker Office conversion (workers=1)."
+        )
+
+
+def _resolve_workers(workers: int | None) -> int:
+    if workers is None or workers == 0:
+        return max(1, min(8, os.cpu_count() or 1))
+    if workers < 0:
+        raise ValueError("Workers must be 0 or a positive integer.")
+    return workers
+
+
+def _parallel_process(items: list[Path], processor: Callable[[Path], T], workers: int | None) -> list[T]:
+    """Process items in parallel using a thread pool.
+    
+    Args:
+        items: List of items to process.
+        processor: Function to apply to each item.
+        workers: Number of worker threads (None for auto-detection).
+    
+    Returns:
+        List of processed results in the same order as input items.
+    
+    Raises:
+        RuntimeError: If parallel processing fails to return all results.
+    """
+    if not items:
+        return []
+
+    max_workers = _resolve_workers(workers)
+    if max_workers == 1 or len(items) == 1:
+        return [processor(item) for item in items]
+
+    results: list[T | None] = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {executor.submit(processor, item): index for index, item in enumerate(items)}
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            results[index] = future.result()
+
+    if any(result is None for result in results):
+        raise RuntimeError("Parallel processing did not return all expected results.")
+
+    return [result for result in results if result is not None]
+
+
+def _add_workers_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Number of worker threads. Use 0 for automatic selection.",
+    )
+
+
+def _emit_office_progress(
+    callback: OfficeProgressCallback | None,
+    index: int,
+    total: int,
+    input_file: Path,
+    state: str,
+) -> None:
+    if callback is not None:
+        callback(index, total, input_file, state)
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` atomically (temp file in the same folder + os.replace).
+
+    Writing to a sibling temp file and replacing prevents a partially written or
+    corrupt output file from being left behind if the operation fails midway.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def _atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    _atomic_write_bytes(path, text.encode(encoding))
+
+
+def _atomic_write_pdf(writer, path: Path) -> None:
+    """Serialize a PdfWriter to ``path`` atomically."""
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    _atomic_write_bytes(path, buffer.getvalue())

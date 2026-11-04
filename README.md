@@ -34,6 +34,10 @@ py -m pip install --upgrade pip
 
 # Install dependencies
 py -m pip install -r requirements.txt
+
+# Optional: install as an editable package (adds the `pdf-tool` and
+# `pdf-editor-gui` console commands and enables `python -m pdfeditor`)
+py -m pip install -e .
 ```
 
 ### Optional: Development Setup
@@ -42,7 +46,7 @@ py -m pip install -r requirements.txt
 # Install development dependencies
 py -m pip install pytest pytest-cov black ruff mypy
 
-# Run tests (when available)
+# Run tests
 pytest
 
 # Format code
@@ -184,11 +188,14 @@ The GUI has tabs for:
 
 ### Logging
 
-The application logs to console with timestamps. For detailed debugging:
+The application logs to the console with timestamps. Control verbosity with the global
+`--verbose`/`--quiet` flags or the `PDF_TOOL_LOG_LEVEL` environment variable — no source
+edits required:
 
 ```powershell
-# Set logging level to DEBUG (modify source code)
-# In pdf_tool.py, change: logging.basicConfig(level=logging.DEBUG)
+pdf-tool --verbose edit rotate -i input.pdf -o output.pdf -a 90
+pdf-tool --quiet split -i input.pdf -d out
+$env:PDF_TOOL_LOG_LEVEL = "DEBUG"
 ```
 
 ### Performance Tips
@@ -209,9 +216,11 @@ Page ranges use 1-based indexing:
 
 ## 7. Security Notes
 
-- Paths are resolved to absolute paths to prevent traversal attacks
+- Paths are resolved to absolute paths before use
+- Outputs are written atomically (temporary file + atomic replace), so a failed
+  operation cannot leave a partially written/corrupt file behind
 - Office conversions run in isolated COM contexts
-- Temporary files are cleaned up automatically
+- Office export temporary files are created in a system temp directory and cleaned up automatically
 - No data is sent to external services
 
 ## 8. License

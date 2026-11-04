@@ -167,6 +167,21 @@ The GUI has tabs for:
 - **Batch**: Process entire folders
 - **Print**: Print PDFs to default printer
 
+### Page organizer
+
+**File → Organize Pages…** (`Ctrl+Shift+O`) opens one view showing every page as a
+thumbnail. From there you can:
+
+- Drag pages — or a whole multi-select block — to reorder them
+- Select pages with click, `Ctrl`+click, `Shift`+click or `Ctrl+A`, then right-click for
+  the page actions: rotate (left/right/180°), delete, extract, insert, split, watermark
+  and metadata
+- Read the live page/selection count in the status line
+- Use **Revert to Original** to discard the whole editing session
+
+Every action is applied to a temporary copy, so the original file is only changed when
+you use **Save As…**.
+
 ### GUI Features
 
 - **Drag-and-drop**: Drop files/folders into most path fields

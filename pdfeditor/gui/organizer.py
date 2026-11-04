@@ -1,0 +1,559 @@
+"""A single page-organizer view: every page as a thumbnail, plus the page operations.
+
+This dialog is the one-stop place for page work: it shows all pages of a document as a
+grid, supports Ctrl/Shift/Ctrl+A multi-selection, drag-to-reorder (a whole selection
+moves as one block) and exposes rotate, delete, extract, insert, split, watermark and
+metadata actions through both a toolbar and the right-click menu.
+
+Every action is applied to a throwaway working copy held by
+:class:`~pdfeditor.core.organizer.PageOrganizerDocument`, so the original file is never
+touched, nothing is written until "Save As…" is used, and mistakes can be undone with
+"Revert to Original".
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QAction, QIcon, QImage
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..core import DEFAULT_WATERMARK_FONT_SIZE, DEFAULT_WATERMARK_OPACITY
+from ..core.organizer import PageOrganizerDocument
+from .preview import (
+    PdfThumbnailLoader,
+    _format_page_selection,
+    _scaled_pixmap,
+    qtpdf_available,
+)
+from .widgets import GRID_ICON_SIZE, PageGridWidget
+
+logger = logging.getLogger(__name__)
+
+
+class MetadataDialog(QDialog):
+    """View and edit the PDF document metadata."""
+
+    FIELDS = ("Title", "Author", "Subject", "Keywords", "Creator", "Producer")
+
+    def __init__(self, metadata: dict[str, str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Document metadata")
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.fields: dict[str, QLineEdit] = {}
+        for name in self.FIELDS:
+            edit = QLineEdit(metadata.get(name, ""))
+            edit.setClearButtonEnabled(True)
+            self.fields[name] = edit
+            form.addRow(name, edit)
+        layout.addLayout(form)
+
+        hint = QLabel("Leave a field empty to clear that value.")
+        hint.setStyleSheet("color: #5f6368;")
+        layout.addWidget(hint)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Save metadata")
+        layout.addWidget(buttons)
+
+    def values(self) -> dict[str, str]:
+        """The edited metadata, keyed as the core API expects (e.g. ``Title``)."""
+        return {name: edit.text().strip() for name, edit in self.fields.items()}
+
+
+class WatermarkDialog(QDialog):
+    """Text, opacity, font size and scope for a watermark."""
+
+    def __init__(self, selected_pages: bool = False, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Apply watermark")
+        self.setMinimumWidth(360)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.text_edit = QLineEdit("CONFIDENTIAL")
+        self.text_edit.setPlaceholderText("CONFIDENTIAL")
+        self.opacity_spin = QDoubleSpinBox()
+        self.opacity_spin.setRange(0.05, 1.0)
+        self.opacity_spin.setSingleStep(0.05)
+        self.opacity_spin.setValue(DEFAULT_WATERMARK_OPACITY)
+        self.font_spin = QSpinBox()
+        self.font_spin.setRange(8, 200)
+        self.font_spin.setValue(DEFAULT_WATERMARK_FONT_SIZE)
+        form.addRow("Text", self.text_edit)
+        form.addRow("Opacity", self.opacity_spin)
+        form.addRow("Font size", self.font_spin)
+        layout.addLayout(form)
+
+        self.selected_only = QCheckBox("Only the selected pages")
+        self.selected_only.setChecked(selected_pages)
+        self.selected_only.setEnabled(selected_pages)
+        layout.addWidget(self.selected_only)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Apply watermark")
+        layout.addWidget(buttons)
+
+    def values(self) -> tuple[str, float, int]:
+        """The watermark text, opacity and font size."""
+        return (
+            self.text_edit.text().strip(),
+            self.opacity_spin.value(),
+            self.font_spin.value(),
+        )
+
+    def only_selected(self) -> bool:
+        """True when the watermark should be limited to the current selection."""
+        return self.selected_only.isChecked() and self.selected_only.isEnabled()
+
+
+class PageOrganizerDialog(QDialog):
+    """A thumbnail grid of every page with all the page operations in one place.
+
+    Selection follows the usual desktop conventions: click, Ctrl+click to toggle,
+    Shift+click for a range, Ctrl+A for everything, and dragging a selection moves those
+    pages together. ``confirm_destructive`` controls the delete confirmation popup (tests
+    switch it off).
+    """
+
+    #: Order of the right-click menu / "More actions" menu; an empty tuple is a divider.
+    MENU_LAYOUT: tuple[tuple[str, ...], ...] = (
+        ("select_all",),
+        (),
+        ("rotate_left", "rotate_right", "rotate_180"),
+        (),
+        ("delete", "extract", "insert", "split"),
+        (),
+        ("watermark", "metadata"),
+        (),
+        ("revert", "save_as"),
+    )
+
+    def __init__(self, path: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Organize pages - {Path(path).name}")
+        self.setMinimumSize(900, 640)
+        self.document = PageOrganizerDocument(path)
+        self.confirm_destructive = True
+        self._loader: PdfThumbnailLoader | None = None
+        self._total = 0
+        self._rendered = 0
+        self._cleaned = False
+        self._actions = self._build_actions()
+
+        layout = QVBoxLayout(self)
+        hint = QLabel(
+            "Drag pages to rearrange them, then select pages (Ctrl/Shift/Ctrl+A) and "
+            "right-click for page actions. Edits are temporary until you Save As…"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #5f6368;")
+        layout.addWidget(hint)
+
+        self.grid = PageGridWidget(grid=True, multi_select=True)
+        self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.grid.customContextMenuRequested.connect(self._show_context_menu)
+        self.grid.itemSelectionChanged.connect(self._update_status)
+        layout.addWidget(self.grid)
+        layout.addLayout(self._build_toolbar())
+
+        self.status = QLabel("")
+        self.status.setStyleSheet("color: #5f6368;")
+        layout.addWidget(self.status)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.reload()
+
+    # -- construction ----------------------------------------------------------
+    def _build_actions(self) -> dict[str, QAction]:
+        """Every action, shared by the toolbar buttons, menus and shortcuts."""
+        actions: dict[str, QAction] = {}
+
+        def add(
+            key: str,
+            text: str,
+            handler,
+            shortcut: str | None = None,
+            needs_selection: bool = False,
+            tip: str = "",
+        ) -> None:
+            action = QAction(text, self)
+            action.setToolTip(tip or text)
+            action.triggered.connect(handler)
+            if shortcut:
+                action.setShortcut(shortcut)
+                self.addAction(action)
+            action.setData(needs_selection)
+            actions[key] = action
+
+        add(
+            "rotate_left",
+            "Rotate Left",
+            lambda: self.rotate_selected(-90),
+            "Ctrl+L",
+            tip="Rotate the selected pages (or every page) 90° counter-clockwise",
+        )
+        add(
+            "rotate_right",
+            "Rotate Right",
+            lambda: self.rotate_selected(90),
+            "Ctrl+R",
+            tip="Rotate the selected pages (or every page) 90° clockwise",
+        )
+        add("rotate_180", "Rotate 180°", lambda: self.rotate_selected(180), "Ctrl+Shift+R")
+        add(
+            "delete",
+            "Delete Pages",
+            self.delete_selected,
+            "Del",
+            needs_selection=True,
+            tip="Remove the selected pages from the document",
+        )
+        add(
+            "extract",
+            "Extract Selected to PDF…",
+            self.extract_selected,
+            "Ctrl+E",
+            needs_selection=True,
+        )
+        add("insert", "Insert Pages…", self.insert_pages, "Ctrl+I")
+        add("split", "Split Pages…", self.split_pages)
+        add("watermark", "Watermark…", self.apply_watermark, "Ctrl+Shift+W")
+        add("metadata", "Metadata…", self.edit_metadata, "Ctrl+M")
+        add("select_all", "Select All Pages", self.select_all, "Ctrl+A")
+        add("revert", "Revert to Original", self.revert)
+        add("save_as", "Save As…", self.save_as, "Ctrl+S")
+        return actions
+
+    def _build_toolbar(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        for key in ("rotate_left", "rotate_right", "delete", "extract", "metadata"):
+            row.addWidget(self._tool_button(key))
+        self.more_button = QToolButton()
+        self.more_button.setText("More actions")
+        self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.more_button.setMenu(self.build_actions_menu())
+        row.addWidget(self.more_button)
+        row.addStretch(1)
+        self.save_button = QPushButton("Save As…")
+        self.save_button.setToolTip("Write the edited document out to a new file")
+        self.save_button.clicked.connect(self.save_as)
+        row.addWidget(self.save_button)
+        return row
+
+    def _tool_button(self, key: str) -> QPushButton:
+        action = self._actions[key]
+        button = QPushButton(action.text().replace("…", ""))
+        button.setToolTip(action.toolTip())
+        button.clicked.connect(action.trigger)
+        return button
+
+    def build_actions_menu(self) -> QMenu:
+        """A fresh menu holding every page action (context menu + "More actions")."""
+        menu = QMenu(self)
+        for group in self.MENU_LAYOUT:
+            if not group:
+                menu.addSeparator()
+                continue
+            for key in group:
+                menu.addAction(self._actions[key])
+        return menu
+
+    # -- thumbnails ------------------------------------------------------------
+    def reload(self) -> None:
+        """Rebuild the grid from the current working copy."""
+        self._stop_loader()
+        self._total = 0
+        self._rendered = 0
+        # Populate straight away so the grid is usable while the icons stream in.
+        try:
+            self._populate(self.document.page_count())
+        except Exception:  # noqa: BLE001 - the renderer reports the count as a fallback
+            logger.exception("Could not count the pages of the working copy")
+        if not qtpdf_available():
+            self._set_message("Thumbnails unavailable (QtPdf missing); page actions still work.")
+            self._update_status()
+            return
+        self._loader = PdfThumbnailLoader(str(self.document.path), GRID_ICON_SIZE)
+        self._loader.loaded.connect(self._on_loaded)
+        self._loader.rendered.connect(self._on_rendered)
+        self._loader.failed.connect(self._set_message)
+        self._loader.start()
+        self._update_status()
+
+    def _stop_loader(self) -> None:
+        if self._loader is not None:
+            self._loader.stop()
+            self._loader = None
+
+    def _populate(self, page_count: int) -> None:
+        """(Re)create one grid cell per page."""
+        self.grid.clear()
+        for index in range(page_count):
+            item = QListWidgetItem(f"Page {index + 1}")
+            item.setData(Qt.ItemDataRole.UserRole, index + 1)
+            # Pin the cell size so hit-testing and drag targets stay correct.
+            item.setSizeHint(self.grid.item_size())
+            self.grid.addItem(item)
+        self._total = page_count
+        self._rendered = 0
+        self._update_status()
+
+    @Slot(int)
+    def _on_loaded(self, page_count: int) -> None:
+        if self.grid.count() != page_count:
+            self._populate(page_count)
+
+    @Slot(int, QImage)
+    def _on_rendered(self, index: int, image: QImage) -> None:
+        item = self.grid.item(index)
+        if item is not None:
+            item.setIcon(QIcon(_scaled_pixmap(image, GRID_ICON_SIZE)))
+        self._rendered += 1
+        if self._rendered >= self._total and self.grid.count():
+            self._update_status()
+
+    @Slot(str)
+    def _set_message(self, message: str) -> None:
+        self.status.setText(message)
+
+    # -- selection -------------------------------------------------------------
+    def selected_spec(self) -> str:
+        """The current selection as a 1-based spec such as ``"1,3,5-7"``."""
+        return _format_page_selection([row + 1 for row in self.grid.selected_rows()])
+
+    def select_all(self) -> None:
+        """Select every page (what Ctrl+A and the context menu call)."""
+        self.grid.selectAll()
+        self._update_status()
+
+    def _require_selection(self) -> str | None:
+        spec = self.selected_spec()
+        if not spec:
+            self.status.setText("Select one or more pages first.")
+            return None
+        return spec
+
+    def _update_status(self) -> None:
+        has_selection = bool(self.grid.selected_rows())
+        for action in self._actions.values():
+            if action.data():
+                action.setEnabled(has_selection)
+        if self.grid.count():
+            self.status.setText(
+                f"{self.grid.count()} page(s) · {len(self.grid.selected_rows())} selected"
+            )
+
+    @Slot()
+    def _show_context_menu(self, pos) -> None:
+        # Right-clicking outside the selection acts on the page under the pointer.
+        item = self.grid.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.grid.clearSelection()
+            item.setSelected(True)
+            self.grid.setCurrentItem(item)
+        self._update_status()
+        self.build_actions_menu().exec(self.grid.viewport().mapToGlobal(pos))
+
+    # -- page operations -------------------------------------------------------
+    def rotate_selected(self, angle: int) -> None:
+        """Rotate the selection, or every page when nothing is selected."""
+        pages = self.selected_spec() or None
+        target = f"page(s) {pages}" if pages else "every page"
+        self._mutate(
+            lambda doc: doc.rotate(pages, angle),
+            f"Rotated {target} by {angle}°.",
+        )
+
+    def delete_selected(self) -> None:
+        """Delete the selected pages from the working copy."""
+        spec = self._require_selection()
+        if spec is None:
+            return
+        if self.confirm_destructive:
+            answer = QMessageBox.question(
+                self, "Delete pages", f"Delete page(s) {spec} from the working copy?"
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._mutate(lambda doc: doc.delete(spec), f"Deleted page(s) {spec}.")
+
+    def extract_selected(self) -> None:
+        """Write the selected pages to a separate PDF."""
+        spec = self._require_selection()
+        if spec is None:
+            return
+        output, _ = QFileDialog.getSaveFileName(
+            self,
+            "Extract selected pages",
+            self.document.suggest_output_name("_selected"),
+            "PDF Files (*.pdf)",
+        )
+        if not output:
+            return
+        self._export(
+            lambda: self.document.extract(spec, output),
+            f"Extracted page(s) {spec} to {output}.",
+        )
+
+    def insert_pages(self) -> None:
+        """Insert the pages of another PDF before the selected page."""
+        source, _ = QFileDialog.getOpenFileName(
+            self, "Choose the PDF to insert", "", "PDF Files (*.pdf)"
+        )
+        if not source:
+            return
+        rows = self.grid.selected_rows()
+        default_position = max(rows) + 2 if rows else 1
+        position, accepted = QInputDialog.getInt(
+            self,
+            "Insert position",
+            f"Insert before page (1-{self.document.page_count() + 1}):",
+            default_position,
+            1,
+            self.document.page_count() + 1,
+        )
+        if not accepted:
+            return
+        self._mutate(
+            lambda doc: doc.insert(source, position),
+            f"Inserted {Path(source).name} before page {position}.",
+        )
+
+    def split_pages(self) -> None:
+        """Write one PDF per page (or per selected page) into a folder."""
+        spec = self.selected_spec() or None
+        output_dir = QFileDialog.getExistingDirectory(self, "Choose a folder for the split pages")
+        if not output_dir:
+            return
+        written: list[Path] = []
+        self._export(
+            lambda: written.extend(self.document.split(output_dir, spec, None)),
+            lambda: f"Wrote {len(written)} split file(s) to {output_dir}.",
+        )
+
+    def apply_watermark(self) -> None:
+        """Add a text watermark to the selection or to the whole document."""
+        spec = self.selected_spec() or None
+        dialog = WatermarkDialog(selected_pages=bool(spec), parent=self)
+        if not dialog.exec():
+            return
+        text, opacity, font_size = dialog.values()
+        pages = spec if dialog.only_selected() else None
+        target = f"page(s) {pages}" if pages else "every page"
+        self._mutate(
+            lambda doc: doc.watermark(pages, text, opacity, font_size),
+            f"Watermarked {target} with '{text}'.",
+        )
+
+    def edit_metadata(self) -> None:
+        """View and edit the document metadata."""
+        dialog = MetadataDialog(self.document.get_metadata(), self)
+        if not dialog.exec():
+            return
+        values = dialog.values()
+        self._mutate(lambda doc: doc.set_metadata(values), "Metadata updated.")
+
+    def revert(self) -> None:
+        """Throw away every edit and return to the original document."""
+        self.document.revert()
+        self.reload()
+        self.status.setText("Reverted to the original document.")
+
+    def save_as(self) -> str | None:
+        """Write the working copy out to a file the user picks."""
+        output, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save organized PDF",
+            self.document.suggest_output_name(),
+            "PDF Files (*.pdf)",
+        )
+        if not output:
+            return None
+        try:
+            saved = self.document.save_as(output)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Could not save the organized PDF")
+            self.status.setText(f"Error: {exc}")
+            return None
+        self.status.setText(f"Saved {saved}.")
+        return str(saved)
+
+    def saved_path(self) -> str | None:
+        """The file written by the last successful Save As, if any."""
+        path = self.document.saved_path
+        return str(path) if path else None
+
+    # -- helpers ---------------------------------------------------------------
+    def _mutate(self, operation, describe) -> None:
+        """Apply a change to the working copy, then rebuild the grid."""
+        try:
+            operation(self.document)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Page organizer action failed")
+            self.status.setText(f"Error: {exc}")
+            return
+        self.reload()
+        self.status.setText(describe() if callable(describe) else describe)
+
+    def _export(self, operation, describe) -> None:
+        """Run an action that writes files outside the working copy; no grid reload."""
+        try:
+            operation()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Page organizer export failed")
+            self.status.setText(f"Error: {exc}")
+            return
+        self.status.setText(describe() if callable(describe) else describe)
+
+    # -- lifecycle -------------------------------------------------------------
+    def done(self, result: int) -> None:
+        self._cleanup()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._cleanup()
+        super().closeEvent(event)
+
+    def _cleanup(self) -> None:
+        """Stop the thumbnail thread and drop the temporary working copy."""
+        if self._cleaned:
+            return
+        self._cleaned = True
+        self._stop_loader()
+        self.document.close()

@@ -181,6 +181,9 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("&Open PDF...")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._choose_current_document)
+        organize_action = file_menu.addAction("&Organize Pages...")
+        organize_action.setShortcut("Ctrl+Shift+O")
+        organize_action.triggered.connect(self.open_page_organizer)
         quit_action = file_menu.addAction("&Quit")
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
@@ -249,6 +252,32 @@ class MainWindow(QMainWindow):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
         if file_name:
             self.current_document.setText(file_name)
+
+    def open_page_organizer(self) -> None:
+        """Open the page organizer (thumbnail grid) for the current document.
+
+        Reordering, rotating, deleting, extracting, inserting, splitting, watermarking
+        and metadata editing all happen in that one view against a temporary working
+        copy, which "Save As…" then writes out.
+        """
+        text = self.current_document.text().strip()
+        if not text:
+            self._choose_current_document()
+            text = self.current_document.text().strip()
+        if not text:
+            return
+        try:
+            path = _existing_file_from_input(text, "PDF")
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(exc)
+            return
+        from .organizer import PageOrganizerDialog
+
+        dialog = PageOrganizerDialog(str(path), self)
+        dialog.exec()
+        saved = dialog.saved_path()
+        if saved:
+            self.status.showMessage(f"Saved organized PDF: {saved}")
 
     def _on_current_document_changed(self, text: str) -> None:
         path = text.strip()

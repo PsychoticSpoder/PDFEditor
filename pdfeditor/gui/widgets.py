@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QPushButton,
     QVBoxLayout,
@@ -26,6 +28,12 @@ from ..core import (
     _validate_output_dir,
     _validate_output_path,
 )
+
+# Thumbnail sizes shared by every page grid (picker, reorder dialog, organizer).
+GRID_ICON_SIZE = QSize(96, 128)
+GRID_CELL_SIZE = QSize(120, 176)
+LIST_ICON_SIZE = QSize(64, 84)
+LIST_ROW_HEIGHT = 92
 
 
 
@@ -473,3 +481,153 @@ class OperationPanel(QGroupBox):
     def output_path(self) -> str:
         return self.output_edit.text()
 
+
+class PageGridWidget(QListWidget):
+    """A list/grid of page thumbnails whose items are reordered by dragging.
+
+    Reordering is driven directly from mouse events rather than Qt's drag-and-drop
+    machinery, so it works reliably regardless of platform/theme: while the left button
+    is held, the item under the pointer is moved to follow it. With ``multi_select=True``
+    a whole selection travels as one block, so a group of pages can be dropped somewhere
+    else together.
+    """
+
+    def __init__(self, grid: bool = True, multi_select: bool = False) -> None:
+        super().__init__()
+        self._grid = grid
+        self._multi_select = multi_select
+        self._item_size = QSize(0, LIST_ROW_HEIGHT)
+        self._drag_rows: list[int] = []
+        self._press_pos = None
+        self.setUniformItemSizes(True)
+        self.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+            if multi_select
+            else QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self._apply_mode()
+
+    # -- layout ---------------------------------------------------------------
+    def _apply_mode(self) -> None:
+        if self._grid:
+            self.setViewMode(QListView.ViewMode.IconMode)
+            self.setFlow(QListView.Flow.LeftToRight)
+            self.setWrapping(True)
+            self.setResizeMode(QListView.ResizeMode.Adjust)
+            self.setIconSize(GRID_ICON_SIZE)
+            self._item_size = QSize(GRID_CELL_SIZE)
+        else:
+            self.setViewMode(QListView.ViewMode.ListMode)
+            self.setFlow(QListView.Flow.TopToBottom)
+            self.setWrapping(False)
+            self.setIconSize(LIST_ICON_SIZE)
+            self._item_size = QSize(0, LIST_ROW_HEIGHT)
+        self.setMovement(QListView.Movement.Static)
+        for row in range(self.count()):
+            self.item(row).setSizeHint(self._item_size)
+
+    def is_grid(self) -> bool:
+        return self._grid
+
+    def set_grid(self, grid: bool) -> None:
+        """Switch between the icon grid and the single-column list."""
+        if grid != self._grid:
+            self._grid = grid
+            self._apply_mode()
+
+    def item_size(self) -> QSize:
+        """The size hint every item should use in the current mode."""
+        return QSize(self._item_size)
+
+    # -- ordering -------------------------------------------------------------
+    def selected_rows(self) -> list[int]:
+        """Rows of the selected items, in document order."""
+        return sorted(self.row(item) for item in self.selectedItems())
+
+    def move_rows_to(self, rows: list[int], target: int) -> bool:
+        """Move the items at ``rows`` so the block lands at index ``target``.
+
+        ``target`` indexes the list as it is *now*, which is what a pointer hit-test
+        produces; rows inside the moved block are ignored. Returns True when the order
+        actually changed.
+        """
+        count = self.count()
+        rows = sorted({row for row in rows if 0 <= row < count})
+        if not rows or not 0 <= target < count or target in rows:
+            return False
+        moving = [self.item(row) for row in rows]
+        for row in reversed(rows):
+            self.takeItem(row)
+        insert_at = min(target, self.count())
+        for offset, item in enumerate(moving):
+            self.insertItem(insert_at + offset, item)
+        # Keep the moved block selected so a continuing drag still tracks it. The current
+        # item is set first because it resets the selection on its own.
+        self.setCurrentItem(moving[0])
+        for offset in range(1, len(moving)):
+            self.item(insert_at + offset).setSelected(True)
+        return True
+
+    def move_row_to(self, row: int, target: int) -> bool:
+        """Move a single item (used by the Move Earlier/Later buttons)."""
+        return self.move_rows_to([row], target)
+
+    # -- drag interaction -----------------------------------------------------
+    def _target_index(self, pos) -> int | None:
+        """Index of the item under ``pos`` (or the nearest centre) for a drop."""
+        count = self.count()
+        if count == 0:
+            return None
+        item = self.itemAt(pos)
+        if item is not None:
+            return self.row(item)
+        best_row: int | None = None
+        best_distance: int | None = None
+        for row in range(count):
+            rect = self.visualItemRect(self.item(row))
+            if not rect.isValid():
+                continue
+            centre = rect.center()
+            distance = (centre.x() - pos.x()) ** 2 + (centre.y() - pos.y()) ** 2
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_row = row
+        return best_row
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
+            item = self.itemAt(self._press_pos)
+            if item is None:
+                self._drag_rows = []
+            elif item.isSelected():
+                # Pressing inside the selection keeps the whole block for the drag.
+                self._drag_rows = self.selected_rows()
+            else:
+                self._drag_rows = [self.row(item)]
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if (
+            not self._drag_rows
+            or self._press_pos is None
+            or not (event.buttons() & Qt.MouseButton.LeftButton)
+        ):
+            super().mouseMoveEvent(event)
+            return
+        pos = event.position().toPoint()
+        if (pos - self._press_pos).manhattanLength() < QApplication.startDragDistance():
+            super().mouseMoveEvent(event)
+            return
+        target = self._target_index(pos)
+        if target is not None and target not in self._drag_rows:
+            if self.move_rows_to(self._drag_rows, target):
+                self._drag_rows = self.selected_rows()
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_rows = []
+        self._press_pos = None
+        super().mouseReleaseEvent(event)

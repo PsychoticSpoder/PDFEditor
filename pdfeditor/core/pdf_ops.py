@@ -203,7 +203,14 @@ def split_pdf(input_file: Path, output_dir: Path, pages: str | None, prefix: str
     return written_files
 
 
-def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float = DEFAULT_WATERMARK_OPACITY, font_size: int = DEFAULT_WATERMARK_FONT_SIZE) -> None:
+def watermark_pdf(
+    input_file: Path,
+    output_file: Path,
+    text: str,
+    opacity: float = DEFAULT_WATERMARK_OPACITY,
+    font_size: int = DEFAULT_WATERMARK_FONT_SIZE,
+    pages: str | None = None,
+) -> None:
     """Add a text watermark to a PDF file.
     
     Args:
@@ -212,6 +219,7 @@ def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float
         text: Watermark text to display.
         opacity: Watermark opacity (0.0 to 1.0, default: 0.25).
         font_size: Font size for watermark text (default: 48).
+        pages: Optional 1-based page selection to watermark (default: every page).
     
     Raises:
         ValueError: If opacity is outside valid range.
@@ -219,8 +227,14 @@ def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float
     logger.info(f"Adding watermark to {input_file}: text='{text}', opacity={opacity}")
     reader = PdfReader(str(input_file))
     writer = PdfWriter()
+    pages_to_mark = _parse_page_range(pages, len(reader.pages))
 
-    for page in reader.pages:
+    for index, page in enumerate(reader.pages):
+        # Attach the page to the writer before merging so pypdf has a reference.
+        writer.add_page(page)
+        if index not in pages_to_mark:
+            continue
+
         page_width = float(page.mediabox.width)
         page_height = float(page.mediabox.height)
 
@@ -242,8 +256,6 @@ def watermark_pdf(input_file: Path, output_file: Path, text: str, opacity: float
 
         packet.seek(0)
         watermark_page = PdfReader(packet).pages[0]
-        # Attach the page to the writer before merging so pypdf has a reference.
-        writer.add_page(page)
         writer.pages[-1].merge_page(watermark_page)
 
     _atomic_write_pdf(writer, output_file)

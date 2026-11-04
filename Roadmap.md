@@ -148,6 +148,7 @@ The project is now an installable `pdfeditor` package:
 | G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | ✅     |
 | G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | ✅     |
 | G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | ✅     |
+| G10 | Unified page organizer: thumbnail grid, multi-select, all page ops, metadata | High | Medium | ✅     |
 
 ### 10.3 Phased plan
 
@@ -187,16 +188,35 @@ The project is now an installable `pdfeditor` package:
   - [x] Status-bar "Open folder" affordance + richer error guidance.
   - [x] Recent-documents combo, persisted via `QSettings`.
 
+- **Phase 5 — Tier 2: unified page organizer** — ✅ done
+  - [x] `PageOrganizerDocument` (`core/organizer.py`): a Qt-free working-copy session that
+        reuses the core ops (reorder/rotate/delete/watermark/insert/metadata + extract/split)
+        against a temp copy, with `save_as` and `revert`.
+  - [x] `PageGridWidget` (`gui/widgets.py`): the drag-reorder grid extracted from the
+        reorder dialog, now with multi-select block dragging; shared by the reorder dialog,
+        the picker and the organizer.
+  - [x] `PageOrganizerDialog` (`gui/organizer.py`): thumbnail grid with click/`Ctrl`/`Shift`/
+        `Ctrl+A` selection, drag-to-reorder, a toolbar + right-click menu covering rotate,
+        delete, extract, insert, split, watermark, metadata, revert and save-as.
+  - [x] `watermark_pdf(..., pages=...)` so a watermark can target a selection only.
+  - [x] File → **Organize Pages…** (`Ctrl+Shift+O`) entry point in `MainWindow`.
+  - [x] Tests: `tests/test_organizer.py` (working-copy session) and
+        `tests/test_gui_organizer.py` (grid + dialog actions).
+
 ### 10.4 Key artifacts
 
 | Module | Contents |
 |--------|----------|
-| `pdfeditor/gui/widgets.py` | `DropLineEdit`, `PathRow`, `OutputRow`, `OperationPanel`, `PageRangeField`, `OrderedFileList` |
+| `pdfeditor/gui/widgets.py` | `DropLineEdit`, `PathRow`, `OutputRow`, `OperationPanel`, `PageRangeField`, `OrderedFileList`, `PageGridWidget` |
 | `pdfeditor/gui/workers.py` | `BatchWorker`, `SingleOpWorker` (+ cancellation) |
-| `pdfeditor/gui/preview.py` | `PdfPreview`, `PagePickerDialog` (QtPdf) |
+| `pdfeditor/gui/preview.py` | `PdfPreview`, `PagePickerDialog`, `PageReorderDialog` (QtPdf) |
+| `pdfeditor/gui/organizer.py` | `PageOrganizerDialog`, `MetadataDialog`, `WatermarkDialog` |
+| `pdfeditor/core/organizer.py` | `PageOrganizerDocument` (working-copy editing session) |
 | `pdfeditor/gui/theme.py` | `apply_theme(app)` |
 | `pdfeditor/gui/main_window.py` | `MainWindow` (sidebar + stacked panels, status, settings) |
 | `tests/test_gui_smoke.py` | pytest-qt smoke / validation tests |
+| `tests/test_gui_organizer.py` | pytest-qt tests for the page grid and organizer |
+| `tests/test_organizer.py` | Tests for the working-copy organizer session |
 
 ### 10.5 Risks & mitigations
 

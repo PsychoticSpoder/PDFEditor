@@ -18,16 +18,21 @@ from pdfeditor.gui import MainWindow  # noqa: E402
 from pdfeditor.gui.widgets import _existing_file_from_input, _paths_from_input  # noqa: E402
 
 
-def test_main_window_builds_with_expected_tabs(qtbot):
+def test_main_window_builds_with_sidebar(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
 
     assert window.windowTitle() == "PDF Editor Tool"
+    assert window.panel_list.count() == window.panel_stack.count()
+    assert window.panel_list.item(0).text() == "Rotate"
+    assert window.panel_list.count() >= 12
 
-    tabs = window.findChild(QTabWidget)
-    assert tabs is not None
-    labels = [tabs.tabText(index) for index in range(tabs.count())]
-    assert labels == ["Edit", "Split", "Combine", "Convert", "Batch", "Print"]
+
+def test_sidebar_drives_panel_stack(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.panel_list.setCurrentRow(2)
+    assert window.panel_stack.currentIndex() == 2
 
 
 def test_existing_file_from_input_reports_missing(tmp_path):

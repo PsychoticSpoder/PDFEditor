@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -108,15 +109,29 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color: #666666;")
         root_layout.addWidget(hint)
 
-        tabs = QTabWidget()
-        tabs.addTab(_scrollable(self._build_edit_tab()), "Edit")
-        tabs.addTab(_scrollable(self._build_split_tab()), "Split")
-        tabs.addTab(_scrollable(self._build_combine_tab()), "Combine")
-        tabs.addTab(_scrollable(self._build_convert_tab()), "Convert")
-        tabs.addTab(_scrollable(self._build_batch_tab()), "Batch")
-        tabs.addTab(_scrollable(self._build_print_tab()), "Print")
-        root_layout.addWidget(tabs, stretch=1)
-        self.tabs = tabs
+        # Left action sidebar + a stack of operation panels (document-centric IA).
+        self.panel_list = QListWidget()
+        self.panel_list.setFixedWidth(170)
+        self.panel_stack = QStackedWidget()
+
+        panels: list[tuple[str, QWidget]] = list(self._build_edit_panels())
+        panels.append(("Split", self._build_split_tab()))
+        panels.append(("Merge / Combine", self._build_combine_tab()))
+        panels.append(("Convert", self._build_convert_tab()))
+        panels.append(("Batch", self._build_batch_tab()))
+        panels.append(("Print", self._build_print_tab()))
+
+        for label, panel in panels:
+            self.panel_list.addItem(label)
+            self.panel_stack.addWidget(_scrollable(panel))
+
+        self.panel_list.currentRowChanged.connect(self.panel_stack.setCurrentIndex)
+        self.panel_list.setCurrentRow(0)
+
+        panels_row = QHBoxLayout()
+        panels_row.addWidget(self.panel_list)
+        panels_row.addWidget(self.panel_stack, stretch=1)
+        root_layout.addLayout(panels_row, stretch=1)
 
         self.setCentralWidget(central)
 
@@ -140,7 +155,8 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy: bool) -> None:
         """Toggle interaction and the progress/cancel affordances while work runs."""
-        self.tabs.setEnabled(not busy)
+        self.panel_list.setEnabled(not busy)
+        self.panel_stack.setEnabled(not busy)
         self.progress.setVisible(busy)
         self.cancel_button.setVisible(busy)
         if busy:
@@ -176,11 +192,7 @@ class MainWindow(QMainWindow):
 
         input_edit.textChanged.connect(refresh)
 
-    def _build_edit_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setSpacing(12)
-
+    def _build_edit_panels(self) -> list[tuple[str, QWidget]]:
         rotate_box = QGroupBox("Rotate")
         rotate_form = QFormLayout(rotate_box)
 
@@ -370,19 +382,19 @@ class MainWindow(QMainWindow):
         meta_form.addRow("Keywords", self.meta_keywords)
         meta_form.addRow(meta_buttons)
 
-        layout.addWidget(rotate_box)
-        layout.addWidget(watermark_box)
-        layout.addWidget(delete_box)
-        layout.addWidget(reorder_box)
-        layout.addWidget(extract_box)
-        layout.addWidget(insert_box)
-        layout.addWidget(meta_box)
-        layout.addStretch(1)
         self._bind_page_count(self.rotate_pages, self.rotate_input)
         self._bind_page_count(self.delete_pages, self.delete_input)
         self._bind_page_count(self.extract_pages, self.extract_input)
         self._bind_page_count(self.insert_pages_field, self.insert_file)
-        return tab
+        return [
+            ("Rotate", rotate_box),
+            ("Watermark", watermark_box),
+            ("Delete Pages", delete_box),
+            ("Reorder", reorder_box),
+            ("Extract Pages", extract_box),
+            ("Insert Pages", insert_box),
+            ("Metadata", meta_box),
+        ]
 
     def _build_split_tab(self) -> QWidget:
         tab = QWidget()

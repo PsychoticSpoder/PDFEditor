@@ -146,7 +146,7 @@ The project is now an installable `pdfeditor` package:
 | G5 | Ordered file list (add/remove/reorder) for Merge and Images→PDF         | Medium | Low    | ✅     |
 | G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | ◐      |
 | G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | ✅     |
-| G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | `[ ]`  |
+| G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | ◐     |
 | G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | ◐     |
 
 ### 10.3 Phased plan
@@ -172,8 +172,9 @@ The project is now an installable `pdfeditor` package:
   - [x] Batch: Dry Run button (workers/continue-on-error already enable contextually).
   - [x] GUI parity: Extract Pages, Insert Pages, Metadata form.
 
-- **Phase 3 — Tier 1A: document-centric redesign**
-  - [ ] Left action sidebar + `QStackedWidget` of panels; shared Input/Output bar.
+- **Phase 3 — Tier 1A: document-centric redesign** — ◐ in progress
+  - [x] Left action sidebar + `QStackedWidget` of operation panels (replaces the flat tab bar).
+  - [ ] Shared Input/Output bar.
   - [ ] "Current document" state so operations reuse the loaded input.
   - [ ] Optional `PdfPreview` + `PagePickerDialog` (PySide6 `QtPdf`, no new dependency).
 

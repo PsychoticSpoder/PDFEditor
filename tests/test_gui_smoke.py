@@ -57,6 +57,15 @@ def test_current_document_propagates_to_panels(qtbot, tmp_path):
     assert window.print_input.text() == str(src)
 
 
+def test_menu_bar_and_status_extras(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    titles = [action.text() for action in window.menuBar().actions()]
+    assert "&File" in titles
+    assert "&Help" in titles
+    assert window.open_folder_button.text() == "Open folder"
+
+
 def test_existing_file_from_input_reports_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         _existing_file_from_input(str(tmp_path / "missing.pdf"), "Input PDF")

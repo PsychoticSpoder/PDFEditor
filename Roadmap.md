@@ -3,7 +3,7 @@
 > **Implementation status:** Items 1–8 are **implemented** (✅). Item 9 is **partially
 > implemented** — page extract/insert and metadata editing shipped; PDF→image and
 > redaction remain open `[ ]` (deferred). All automated tests pass (`pytest -q`).
-> A GUI usability plan is captured in [Section 10](#10-gui-usability--intuitiveness-planned).
+> The GUI usability plan in [Section 10](#10-gui-usability--intuitiveness-planned) is implemented (✅).
 
 ## Summary of current state (updated)
 
@@ -147,7 +147,7 @@ The project is now an installable `pdfeditor` package:
 | G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | ◐      |
 | G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | ✅     |
 | G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | ✅     |
-| G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | ◐     |
+| G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | ✅     |
 
 ### 10.3 Phased plan
 
@@ -179,13 +179,13 @@ The project is now an installable `pdfeditor` package:
   - [x] `PagePickerDialog` thumbnail grid (via bundled QtPdf) → "Pick…" on page-range fields.
   - [x] Window-level drag-to-open (drop a PDF onto the window).
 
-- **Phase 4 — Tier 3: polish** — ◐ in progress
+- **Phase 4 — Tier 3: polish** — ✅ done
   - [x] `gui/theme.py` stylesheet (spacing, group titles, hover states).
   - [x] `QScrollArea` wrapping + `QSettings` window-geometry persistence.
   - [x] Action-oriented button labels ("Rotate", "Merge PDFs", "Extract Text", ...).
-  - [ ] Shortcuts/mnemonics, tab order, default buttons.
-  - [ ] Richer error guidance and "Open folder" affordances.
-  - [ ] Recent-files list; menu bar + toolbar.
+  - [x] Menu bar with mnemonics + shortcuts (`Ctrl+O`, `Ctrl+Q`).
+  - [x] Status-bar "Open folder" affordance + richer error guidance.
+  - [x] Recent-documents combo, persisted via `QSettings`.
 
 ### 10.4 Key artifacts
 

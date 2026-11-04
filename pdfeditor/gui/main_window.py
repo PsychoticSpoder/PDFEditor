@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QSettings, Qt, QThread
+from PySide6.QtCore import QSettings, Qt, QThread, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -169,7 +170,22 @@ class MainWindow(QMainWindow):
         self.cancel_button.clicked.connect(self._request_cancel)
         self.status.addPermanentWidget(self.progress)
         self.status.addPermanentWidget(self.cancel_button)
+        self.open_folder_button = QPushButton("Open folder")
+        self.open_folder_button.clicked.connect(self._open_current_folder)
+        self.status.addPermanentWidget(self.open_folder_button)
         self.status.showMessage("Ready")
+
+        # Menu bar with mnemonics and common shortcuts.
+        file_menu = self.menuBar().addMenu("&File")
+        open_action = file_menu.addAction("&Open PDF...")
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._choose_current_document)
+        quit_action = file_menu.addAction("&Quit")
+        quit_action.setShortcut("Ctrl+Q")
+        quit_action.triggered.connect(self.close)
+        help_menu = self.menuBar().addMenu("&Help")
+        about_action = help_menu.addAction("&About")
+        about_action.triggered.connect(self._show_about)
 
         self.batch_thread: QThread | None = None
         self.batch_worker: BatchWorker | None = None
@@ -268,6 +284,21 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
+
+    def _open_current_folder(self) -> None:
+        text = self.current_document.text().strip()
+        if not text:
+            return
+        folder = Path(text).expanduser().parent
+        if folder.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _show_about(self) -> None:
+        QMessageBox.information(
+            self,
+            "About PDF Editor Tool",
+            "A small toolkit to edit, split, combine, convert and batch-process PDFs.",
+        )
 
     def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
         """Keep a PageRangeField's page-count hint in sync with the input PDF."""
@@ -829,7 +860,7 @@ class MainWindow(QMainWindow):
         logger.info(message)
 
     def _show_error(self, error: Exception) -> None:
-        QMessageBox.critical(self, "Error", str(error))
+        QMessageBox.critical(self, "Error", f"{error}\n\nSee the log for details.")
 
     def run_rotate(self) -> None:
         try:

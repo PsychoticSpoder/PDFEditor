@@ -216,9 +216,8 @@ def test_page_reorder_dialog_order_spec(qtbot, make_pdf):
     qtbot.waitUntil(lambda: dialog.list.count() == 3, timeout=5000)
     assert dialog.order_spec() == "1,2,3"
 
-    # Move the last page to the front (as a drag would).
-    item = dialog.list.takeItem(2)
-    dialog.list.insertItem(0, item)
+    # Move the last page to the front using the same primitive the drag uses.
+    assert dialog.list.move_row_to(2, 0) is True
     assert dialog.order_spec() == "3,1,2"
 
 
@@ -283,6 +282,47 @@ def test_page_reorder_dialog_move_buttons(qtbot, make_pdf):
     dialog.list.setCurrentRow(0)
     dialog._move_selected(1)
     assert dialog.order_spec() == "2,1,3"
+
+
+def test_page_reorder_dialog_drag_reorders(qtbot, make_pdf):
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from pdfeditor.gui.preview import PageReorderDialog, qtpdf_available
+
+    if not qtpdf_available():
+        pytest.skip("QtPdf not available")
+
+    src = make_pdf(pages=3)
+    dialog = PageReorderDialog(str(src))
+    qtbot.addWidget(dialog)
+    dialog.resize(700, 560)
+    dialog.show()
+    qtbot.waitUntil(lambda: dialog.list.count() == 3, timeout=5000)
+
+    lst = dialog.list
+    start = lst.visualItemRect(lst.item(0)).center()
+    end = lst.visualItemRect(lst.item(2)).center()
+
+    def send(kind, pos, buttons):
+        event = QMouseEvent(
+            kind,
+            QPointF(pos),
+            QPointF(pos),
+            Qt.MouseButton.LeftButton,
+            buttons,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(lst.viewport(), event)
+
+    send(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    send(QEvent.Type.MouseMove, start + QPoint(0, 25), Qt.MouseButton.LeftButton)
+    send(QEvent.Type.MouseMove, end, Qt.MouseButton.LeftButton)
+    send(QEvent.Type.MouseButtonRelease, end, Qt.MouseButton.NoButton)
+
+    # Dragging page 1 down onto page 3 reorders the list to 2,3,1.
+    assert dialog.order_spec() == "2,3,1"
 
 
 def test_page_picker_dialog_selected_spec(qtbot, make_pdf):

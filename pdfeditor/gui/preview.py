@@ -19,6 +19,7 @@ from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -44,7 +45,8 @@ except ImportError:  # pragma: no cover
 
 # Thumbnail render sizes
 _PICKER_THUMB = QSize(110, 140)
-_REORDER_THUMB = QSize(96, 128)
+_REORDER_THUMB = QSize(64, 84)
+_REORDER_ROW_HEIGHT = 92
 
 
 def qtpdf_available() -> bool:
@@ -307,6 +309,78 @@ class PagePickerDialog(QDialog):
         super().closeEvent(event)
 
 
+class _ReorderListWidget(QListWidget):
+    """A single-column list whose rows are reordered by dragging.
+
+    Reordering is driven directly from mouse events (rather than Qt's drag-and-drop
+    machinery) so it works reliably regardless of platform/theme: while the left button
+    is held, the row under the pointer is moved to follow it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setViewMode(QListView.ViewMode.ListMode)
+        self.setIconSize(_REORDER_THUMB)
+        self.setUniformItemSizes(True)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self._drag_row: int | None = None
+        self._press_pos = None
+
+    def move_row_to(self, row: int, target: int) -> bool:
+        """Move the item at ``row`` to index ``target``; return True if it moved."""
+        if (
+            row == target
+            or row < 0
+            or target < 0
+            or row >= self.count()
+            or target >= self.count()
+        ):
+            return False
+        item = self.takeItem(row)
+        self.insertItem(target, item)
+        self.setCurrentItem(item)
+        return True
+
+    def _row_at(self, pos) -> int | None:
+        item = self.itemAt(pos)
+        if item is not None:
+            return self.row(item)
+        if self.count() and pos.y() > self.visualItemRect(self.item(self.count() - 1)).center().y():
+            return self.count() - 1
+        return None
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
+            item = self.itemAt(self._press_pos)
+            self._drag_row = self.row(item) if item is not None else None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if (
+            self._drag_row is None
+            or self._press_pos is None
+            or not (event.buttons() & Qt.MouseButton.LeftButton)
+        ):
+            super().mouseMoveEvent(event)
+            return
+        pos = event.position().toPoint()
+        if (pos - self._press_pos).manhattanLength() < QApplication.startDragDistance():
+            super().mouseMoveEvent(event)
+            return
+        target = self._row_at(pos)
+        if target is not None and target != self._drag_row and self.move_row_to(self._drag_row, target):
+            self._drag_row = target
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_row = None
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
+
+
 class PageReorderDialog(QDialog):
     """A draggable thumbnail grid for reordering pages.
 
@@ -330,23 +404,7 @@ class PageReorderDialog(QDialog):
         self.progress.setStyleSheet("color: #5f6368;")
         layout.addWidget(self.progress)
 
-        self.list = QListWidget()
-        self.list.setViewMode(QListView.ViewMode.IconMode)
-        self.list.setFlow(QListView.Flow.LeftToRight)
-        self.list.setWrapping(True)
-        self.list.setResizeMode(QListView.ResizeMode.Adjust)
-        self.list.setMovement(QListView.Movement.Static)
-        self.list.setIconSize(_REORDER_THUMB)
-        self.list.setGridSize(QSize(120, 176))
-        self.list.setUniformItemSizes(True)
-        self.list.setWordWrap(True)
-        self.list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.list.setDragEnabled(True)
-        self.list.setAcceptDrops(True)
-        self.list.setDropIndicatorShown(True)
-        self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list = _ReorderListWidget()
         layout.addWidget(self.list)
 
         controls = QHBoxLayout()
@@ -378,11 +436,10 @@ class PageReorderDialog(QDialog):
     @Slot(int)
     def _on_loaded(self, page_count: int) -> None:
         for index in range(page_count):
-            item = QListWidgetItem(str(index + 1))
+            item = QListWidgetItem(f"Page {index + 1}")
             item.setData(Qt.ItemDataRole.UserRole, index + 1)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
-            # Pin the size so hit-testing stays correct while icons stream in.
-            item.setSizeHint(QSize(120, 176))
+            # Pin the row height so hit-testing stays correct while icons stream in.
+            item.setSizeHint(QSize(0, _REORDER_ROW_HEIGHT))
             self.list.addItem(item)
         self._total = page_count
         self._rendered = 0
@@ -405,13 +462,7 @@ class PageReorderDialog(QDialog):
         self.progress.setText(message)
 
     def _move_selected(self, offset: int) -> None:
-        row = self.list.currentRow()
-        target = row + offset
-        if row < 0 or target < 0 or target >= self.list.count():
-            return
-        item = self.list.takeItem(row)
-        self.list.insertItem(target, item)
-        self.list.setCurrentRow(target)
+        self.list.move_row_to(self.list.currentRow(), self.list.currentRow() + offset)
 
     def order_spec(self) -> str:
         return ",".join(

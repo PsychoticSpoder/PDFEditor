@@ -9,11 +9,13 @@ import pytest
 
 from pdfeditor.core.io_utils import (
     Deadline,
+    OperationCancelled,
     _atomic_write_bytes,
     _atomic_write_text,
     _collect_input_files,
     _filter_office_batch_files,
     _is_office_temp_file,
+    _parallel_process,
     _resolve_workers,
     _validate_existing_file,
     _validate_output_dir,
@@ -117,3 +119,14 @@ def test_deadline_bump_resets_timer():
     assert fired == []  # bumped before the first window elapsed
     time.sleep(0.15)
     assert fired == [True]
+
+
+def test_parallel_process_processes_all_items():
+    items = [Path("a"), Path("b"), Path("c")]
+    assert _parallel_process(items, lambda item: item.name, 1) == ["a", "b", "c"]
+
+
+def test_parallel_process_honours_cancel():
+    items = [Path("a"), Path("b")]
+    with pytest.raises(OperationCancelled):
+        _parallel_process(items, lambda item: item, 1, should_cancel=lambda: True)

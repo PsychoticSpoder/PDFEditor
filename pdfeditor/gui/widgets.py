@@ -93,10 +93,22 @@ def _file_row(
     return layout, line_edit, button
 
 
+def _default_output_path(source_text: str, suffix: str, extension: str = ".pdf") -> str:
+    """Suggest an output path beside the source: ``<stem><suffix><extension>``."""
+    first = source_text.replace("\n", ";").split(";")[0].strip()
+    if not first:
+        return ""
+    path = Path(first).expanduser()
+    return str(path.with_name(f"{path.stem}{suffix}{extension}"))
+
+
 def _save_row(
     label: str,
     button_text: str,
     filter_text: str = "All Files (*.*)",
+    source_edit: QLineEdit | None = None,
+    suffix: str = "",
+    extension: str = ".pdf",
 ) -> tuple[QHBoxLayout, QLineEdit, QPushButton]:
     layout = QHBoxLayout()
     line_edit = DropLineEdit()
@@ -106,12 +118,30 @@ def _save_row(
     layout.addWidget(line_edit, stretch=1)
     layout.addWidget(button)
 
+    auto_fill = {"enabled": True}
+
     def choose_file() -> None:
-        file_name, _ = QFileDialog.getSaveFileName(None, f"Save {label}", "", filter_text)
+        file_name, _ = QFileDialog.getSaveFileName(None, f"Save {label}", line_edit.text(), filter_text)
         if file_name:
+            auto_fill["enabled"] = False
             line_edit.setText(file_name)
 
     button.clicked.connect(choose_file)
+
+    if source_edit is not None:
+        def sync_default(*_args: object) -> None:
+            if not auto_fill["enabled"]:
+                return
+            suggestion = _default_output_path(source_edit.text(), suffix, extension)
+            if suggestion:
+                line_edit.setText(suggestion)
+
+        def mark_manual(*_args: object) -> None:
+            auto_fill["enabled"] = False
+
+        source_edit.textChanged.connect(sync_default)
+        line_edit.textEdited.connect(mark_manual)
+
     return layout, line_edit, button
 
 

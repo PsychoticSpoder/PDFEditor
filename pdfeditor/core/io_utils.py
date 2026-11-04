@@ -16,6 +16,10 @@ T = TypeVar("T")
 OfficeProgressCallback = Callable[[int, int, Path, str], None]
 
 
+class OperationCancelled(RuntimeError):
+    """Raised when a user-requested cancellation stops a long-running operation."""
+
+
 
 def _validate_existing_file(path_text: str) -> Path:
     path = Path(path_text).expanduser().resolve()
@@ -98,13 +102,20 @@ def _resolve_workers(workers: int | None) -> int:
     return workers
 
 
-def _parallel_process(items: list[Path], processor: Callable[[Path], T], workers: int | None) -> list[T]:
+def _parallel_process(
+    items: list[Path],
+    processor: Callable[[Path], T],
+    workers: int | None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[T]:
     """Process items in parallel using a thread pool.
     
     Args:
         items: List of items to process.
         processor: Function to apply to each item.
         workers: Number of worker threads (None for auto-detection).
+        should_cancel: Optional predicate; when True, processing stops and
+            OperationCancelled is raised.
     
     Returns:
         List of processed results in the same order as input items.
@@ -117,14 +128,28 @@ def _parallel_process(items: list[Path], processor: Callable[[Path], T], workers
 
     max_workers = _resolve_workers(workers)
     if max_workers == 1 or len(items) == 1:
-        return [processor(item) for item in items]
+        results_serial: list[T] = []
+        for item in items:
+            if should_cancel is not None and should_cancel():
+                raise OperationCancelled("Operation cancelled.")
+            results_serial.append(processor(item))
+        return results_serial
 
     results: list[T | None] = [None] * len(items)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_index = {executor.submit(processor, item): index for index, item in enumerate(items)}
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        future_to_index = {
+            executor.submit(processor, item): index for index, item in enumerate(items)
+        }
         for future in as_completed(future_to_index):
+            if should_cancel is not None and should_cancel():
+                for pending in future_to_index:
+                    pending.cancel()
+                raise OperationCancelled("Operation cancelled.")
             index = future_to_index[future]
             results[index] = future.result()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if any(result is None for result in results):
         raise RuntimeError("Parallel processing did not return all expected results.")

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStackedWidget,
+    QStatusBar,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -95,12 +96,44 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_batch_tab(), "Batch")
         tabs.addTab(self._build_print_tab(), "Print")
         root_layout.addWidget(tabs, stretch=1)
+        self.tabs = tabs
 
         self.setCentralWidget(central)
+
+        # Unified status bar: shared progress + a Cancel control for long operations.
+        self.status = QStatusBar()
+        self.setStatusBar(self.status)
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(220)
+        self.progress.setVisible(False)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setVisible(False)
+        self.cancel_button.clicked.connect(self._request_cancel)
+        self.status.addPermanentWidget(self.progress)
+        self.status.addPermanentWidget(self.cancel_button)
+        self.status.showMessage("Ready")
+
         self.batch_thread: QThread | None = None
         self.batch_worker: BatchWorker | None = None
         self._single_thread: QThread | None = None
         self._single_worker: SingleOpWorker | None = None
+
+    def _set_busy(self, busy: bool) -> None:
+        """Toggle interaction and the progress/cancel affordances while work runs."""
+        self.tabs.setEnabled(not busy)
+        self.progress.setVisible(busy)
+        self.cancel_button.setVisible(busy)
+        if busy:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 1)
+            self.progress.setValue(0)
+
+    def _request_cancel(self) -> None:
+        """Ask the running batch to stop (honoured between files)."""
+        if self.batch_worker is not None:
+            self.batch_worker.request_cancel()
+            self.status.showMessage("Cancelling…")
 
     def _build_edit_tab(self) -> QWidget:
         tab = QWidget()
@@ -111,7 +144,13 @@ class MainWindow(QMainWindow):
         rotate_form = QFormLayout(rotate_box)
 
         rotate_in_row, self.rotate_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        rotate_out_row, self.rotate_output, _ = _save_row("Output PDF", "Save As", filter_text="PDF Files (*.pdf)")
+        rotate_out_row, self.rotate_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.rotate_input,
+            suffix="_rotated",
+        )
 
         self.rotate_angle = QSpinBox()
         self.rotate_angle.setMinimum(-360)
@@ -138,7 +177,11 @@ class MainWindow(QMainWindow):
             "Input PDF", "Browse", filter_text="PDF Files (*.pdf)"
         )
         water_out_row, self.watermark_output, _ = _save_row(
-            "Output PDF", "Save As", filter_text="PDF Files (*.pdf)"
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.watermark_input,
+            suffix="_watermarked",
         )
 
         self.watermark_text = QLineEdit()
@@ -168,7 +211,13 @@ class MainWindow(QMainWindow):
         delete_form = QFormLayout(delete_box)
 
         delete_in_row, self.delete_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        delete_out_row, self.delete_output, _ = _save_row("Output PDF", "Save As", filter_text="PDF Files (*.pdf)")
+        delete_out_row, self.delete_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.delete_input,
+            suffix="_deleted",
+        )
         self.delete_pages = QLineEdit()
         self.delete_pages.setPlaceholderText("Required page range, e.g. 2,4,6-8")
 
@@ -184,7 +233,13 @@ class MainWindow(QMainWindow):
         reorder_form = QFormLayout(reorder_box)
 
         reorder_in_row, self.reorder_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        reorder_out_row, self.reorder_output, _ = _save_row("Output PDF", "Save As", filter_text="PDF Files (*.pdf)")
+        reorder_out_row, self.reorder_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.reorder_input,
+            suffix="_reordered",
+        )
         self.reorder_order = QLineEdit()
         self.reorder_order.setPlaceholderText("Required full order, e.g. 3,1,2")
 
@@ -231,7 +286,13 @@ class MainWindow(QMainWindow):
         in_row, self.combine_inputs, _ = _file_row(
             "Input PDFs", "Select Files", pick_many=True, filter_text="PDF Files (*.pdf)"
         )
-        out_row, self.combine_output, _ = _save_row("Output PDF", "Save As", filter_text="PDF Files (*.pdf)")
+        out_row, self.combine_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.combine_inputs,
+            suffix="_combined",
+        )
 
         combine_button = QPushButton("Run Combine")
         combine_button.clicked.connect(self.run_combine)
@@ -255,7 +316,12 @@ class MainWindow(QMainWindow):
             pick_many=True,
             filter_text="Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)",
         )
-        img_out_row, self.images_output, _ = _save_row("Output PDF", "Save As", filter_text="PDF Files (*.pdf)")
+        img_out_row, self.images_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.images_inputs,
+        )
 
         images_button = QPushButton("Run Images to PDF")
         images_button.clicked.connect(self.run_images_to_pdf)
@@ -268,7 +334,13 @@ class MainWindow(QMainWindow):
         text_form = QFormLayout(text_box)
 
         text_in_row, self.text_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        text_out_row, self.text_output, _ = _save_row("Output Text", "Save As", filter_text="Text Files (*.txt)")
+        text_out_row, self.text_output, _ = _save_row(
+            "Output Text",
+            "Save As",
+            filter_text="Text Files (*.txt)",
+            source_edit=self.text_input,
+            extension=".txt",
+        )
 
         text_button = QPushButton("Run PDF to Text")
         text_button.clicked.connect(self.run_pdf_to_text)
@@ -475,21 +547,10 @@ class MainWindow(QMainWindow):
         """Update displayed fields based on selected batch action."""
         action = self.batch_action.currentData()
         
-        # Map actions to stacked widget indices (0=empty, 1=rotate, 2=watermark, etc.)
-        action_to_index = {
-            "rotate": 1,
-            "watermark": 2,
-            "delete-pages": 3,
-            "reorder": 4,
-            "split": 5,
-            "pdf-to-text": 6,
-            "word-to-pdf": 7,
-            "excel-to-pdf": 8,
-            "print": 9,
-        }
+        # Stack pages are added in the same order as the combo items (after the leading
+        # "empty" page), so the index is derived rather than duplicated in a table.
         
-        index = action_to_index.get(action, 0)
-        self.batch_action_stacked.setCurrentIndex(index)
+        self.batch_action_stacked.setCurrentIndex(self.batch_action.currentIndex() + 1)
         
         # Update pattern based on action
         if action == "word-to-pdf":
@@ -513,7 +574,9 @@ class MainWindow(QMainWindow):
         self.batch_continue_on_error.setEnabled(office_action)
 
     def _show_success(self, message: str) -> None:
-        QMessageBox.information(self, "Success", message)
+        # Non-modal: report in the status bar rather than a blocking dialog.
+        self.status.showMessage(message, 10000)
+        logger.info(message)
 
     def _show_error(self, error: Exception) -> None:
         QMessageBox.critical(self, "Error", str(error))
@@ -696,7 +759,7 @@ class MainWindow(QMainWindow):
             self.batch_log.clear()
             self.batch_progress.setRange(0, 0)
             self.batch_status.setText("Starting...")
-            self.run_batch_button.setEnabled(False)
+            self._set_busy(True)
 
             effective_workers = 1 if action in OFFICE_ACTIONS else workers
             self.batch_worker = BatchWorker(
@@ -750,6 +813,7 @@ class MainWindow(QMainWindow):
         self._single_worker.failed.connect(self._single_thread.quit)
         self._single_thread.finished.connect(self._cleanup_single_thread)
 
+        self._set_busy(True)
         self._single_thread.start()
 
     def _on_single_finished(self, message: str) -> None:
@@ -760,6 +824,7 @@ class MainWindow(QMainWindow):
         self._show_error(Exception(message))
 
     def _cleanup_single_thread(self) -> None:
+        self._set_busy(False)
         if self._single_worker is not None:
             self._single_worker.deleteLater()
         if self._single_thread is not None:
@@ -773,10 +838,14 @@ class MainWindow(QMainWindow):
     def _on_batch_progress(self, current: int, total: int, status: str) -> None:
         if total <= 0:
             self.batch_progress.setRange(0, 0)
+            self.progress.setRange(0, 0)
         else:
             self.batch_progress.setRange(0, total)
             self.batch_progress.setValue(min(current, total))
+            self.progress.setRange(0, total)
+            self.progress.setValue(min(current, total))
         self.batch_status.setText(status)
+        self.status.showMessage(status)
 
     def _on_batch_finished(self, message: str) -> None:
         if self.batch_progress.maximum() == 0:
@@ -795,7 +864,7 @@ class MainWindow(QMainWindow):
         self._show_error(Exception(message))
 
     def _cleanup_batch_thread(self) -> None:
-        self.run_batch_button.setEnabled(True)
+        self._set_busy(False)
         if self.batch_worker is not None:
             self.batch_worker.deleteLater()
         if self.batch_thread is not None:

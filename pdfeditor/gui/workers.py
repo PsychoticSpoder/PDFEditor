@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -9,6 +10,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from ..core import (
     DEFAULT_EXCEL_PAPER_SIZE,
+    OperationCancelled,
     batch_delete_pages_pdfs,
     batch_excel_to_pdf,
     batch_pdf_to_text,
@@ -60,6 +62,15 @@ class BatchWorker(QObject):
         self.prefix = prefix
         self.continue_on_error = continue_on_error
         self.paper_size = paper_size
+        self._cancel_event = threading.Event()
+
+    @Slot()
+    def request_cancel(self) -> None:
+        """Ask the running batch loop to stop after the current file."""
+        self._cancel_event.set()
+
+    def _should_cancel(self) -> bool:
+        return self._cancel_event.is_set()
 
     def _matching_count(self) -> int:
         files = [path for path in self.input_dir.glob(self.pattern) if path.is_file()]
@@ -87,6 +98,7 @@ class BatchWorker(QObject):
                     self.pages,
                     self.pattern,
                     self.workers,
+                    should_cancel=self._should_cancel,
                 )
                 self.progress.emit(len(written_files), total, "Batch rotate complete")
                 self.finished.emit(f"Batch rotate complete. Created {len(written_files)} files.")
@@ -107,6 +119,7 @@ class BatchWorker(QObject):
                     self.font_size,
                     self.pattern,
                     self.workers,
+                    should_cancel=self._should_cancel,
                 )
                 self.progress.emit(len(written_files), total, "Batch watermark complete")
                 self.finished.emit(f"Batch watermark complete. Created {len(written_files)} files.")
@@ -122,6 +135,7 @@ class BatchWorker(QObject):
                     self.pages,
                     self.pattern,
                     self.workers,
+                    should_cancel=self._should_cancel,
                 )
                 self.progress.emit(len(written_files), total, "Batch delete-pages complete")
                 self.finished.emit(f"Batch delete-pages complete. Created {len(written_files)} files.")
@@ -137,6 +151,7 @@ class BatchWorker(QObject):
                     self.order,
                     self.pattern,
                     self.workers,
+                    should_cancel=self._should_cancel,
                 )
                 self.progress.emit(len(written_files), total, "Batch reorder complete")
                 self.finished.emit(f"Batch reorder complete. Created {len(written_files)} files.")
@@ -151,6 +166,7 @@ class BatchWorker(QObject):
                     self.prefix,
                     self.pattern,
                     self.workers,
+                    should_cancel=self._should_cancel,
                 )
                 self.progress.emit(total, total, "Batch split complete")
                 self.finished.emit(f"Batch split complete. Created {created_count} files.")
@@ -163,6 +179,7 @@ class BatchWorker(QObject):
                     self.output_dir,
                     self.pattern,
                     self.workers,
+                    should_cancel=self._should_cancel,
                 )
                 self.progress.emit(len(written_files), total, "Batch PDF to text complete")
                 self.finished.emit(f"Batch PDF to text complete. Created {len(written_files)} files.")
@@ -190,6 +207,7 @@ class BatchWorker(QObject):
                     on_progress,
                     self.continue_on_error,
                     errors,
+                    should_cancel=self._should_cancel,
                 )
 
                 if errors:
@@ -226,6 +244,7 @@ class BatchWorker(QObject):
                     self.continue_on_error,
                     errors,
                     paper_size,
+                    should_cancel=self._should_cancel,
                 )
 
                 if errors:
@@ -238,13 +257,15 @@ class BatchWorker(QObject):
                 )
 
             elif self.action == "print":
-                printed_count = batch_print_pdfs(self.input_dir, self.pattern, self.workers)
+                printed_count = batch_print_pdfs(self.input_dir, self.pattern, self.workers, should_cancel=self._should_cancel)
                 self.progress.emit(total, total, "Batch print complete")
                 self.finished.emit(f"Batch print submitted for {printed_count} files.")
 
             else:
                 raise ValueError(f"Unsupported batch action: {self.action}")
 
+        except OperationCancelled:
+            self.finished.emit(f"Batch {self.action} cancelled.")
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
 

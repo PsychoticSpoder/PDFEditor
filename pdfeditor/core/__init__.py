@@ -26,6 +26,7 @@ from .constants import (
 )
 from .io_utils import (
     OfficeProgressCallback,
+    OperationCancelled,
     T,
     _add_workers_argument,
     _collect_input_files,

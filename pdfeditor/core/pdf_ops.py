@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
@@ -353,6 +354,7 @@ def batch_rotate_pdfs(
     pages: str | None,
     pattern: str,
     workers: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     """Rotate pages in multiple PDF files in a directory.
     
@@ -375,7 +377,7 @@ def batch_rotate_pdfs(
         rotate_pdf(input_file, output_file, angle, pages)
         return output_file
 
-    result = _parallel_process(files, _process, workers)
+    result = _parallel_process(files, _process, workers, should_cancel)
     logger.info(f"Batch rotate complete: {len(result)} files")
     return result
 
@@ -388,6 +390,7 @@ def batch_watermark_pdfs(
     font_size: int = DEFAULT_WATERMARK_FONT_SIZE,
     pattern: str = DEFAULT_GLOB_PATTERN,
     workers: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     """Add watermarks to multiple PDF files in a directory.
     
@@ -411,7 +414,7 @@ def batch_watermark_pdfs(
         watermark_pdf(input_file, output_file, text, opacity, font_size)
         return output_file
 
-    result = _parallel_process(files, _process, workers)
+    result = _parallel_process(files, _process, workers, should_cancel)
     logger.info(f"Batch watermark complete: {len(result)} files")
     return result
 
@@ -422,6 +425,7 @@ def batch_delete_pages_pdfs(
     pages: str,
     pattern: str,
     workers: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     files = _collect_input_files(input_dir, pattern)
 
@@ -430,7 +434,7 @@ def batch_delete_pages_pdfs(
         delete_page_range(input_file, output_file, pages)
         return output_file
 
-    return _parallel_process(files, _process, workers)
+    return _parallel_process(files, _process, workers, should_cancel)
 
 
 def batch_reorder_pdfs(
@@ -439,6 +443,7 @@ def batch_reorder_pdfs(
     order_spec: str,
     pattern: str,
     workers: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     files = _collect_input_files(input_dir, pattern)
 
@@ -447,7 +452,7 @@ def batch_reorder_pdfs(
         reorder_pages(input_file, output_file, order_spec)
         return output_file
 
-    return _parallel_process(files, _process, workers)
+    return _parallel_process(files, _process, workers, should_cancel)
 
 
 def batch_split_pdfs(
@@ -457,6 +462,7 @@ def batch_split_pdfs(
     prefix: str | None,
     pattern: str,
     workers: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> int:
     files = _collect_input_files(input_dir, pattern)
 
@@ -467,7 +473,7 @@ def batch_split_pdfs(
         written_files = split_pdf(input_file, nested_output_dir, pages, name_prefix)
         return len(written_files)
 
-    counts = _parallel_process(files, _process, workers)
+    counts = _parallel_process(files, _process, workers, should_cancel)
     return sum(counts)
 
 
@@ -476,6 +482,7 @@ def batch_pdf_to_text(
     output_dir: Path,
     pattern: str,
     workers: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     """Extract text from multiple PDF files in a directory.
     
@@ -496,19 +503,24 @@ def batch_pdf_to_text(
         pdf_to_text(input_file, output_file)
         return output_file
 
-    result = _parallel_process(files, _process, workers)
+    result = _parallel_process(files, _process, workers, should_cancel)
     logger.info(f"Batch PDF to text complete: {len(result)} files")
     return result
 
 
-def batch_print_pdfs(input_dir: Path, pattern: str, workers: int | None = None) -> int:
+def batch_print_pdfs(
+    input_dir: Path,
+    pattern: str,
+    workers: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> int:
     files = _collect_input_files(input_dir, pattern)
 
     def _process(input_file: Path) -> int:
         print_pdf(input_file)
         return 1
 
-    results = _parallel_process(files, _process, workers)
+    results = _parallel_process(files, _process, workers, should_cancel)
     return sum(results)
 
 

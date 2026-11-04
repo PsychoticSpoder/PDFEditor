@@ -139,8 +139,8 @@ The project is now an installable `pdfeditor` package:
 | #  | Improvement                                                             | Impact | Effort | Status |
 |----|-------------------------------------------------------------------------|--------|--------|--------|
 | G0 | Modularize the GUI + add a pytest-qt test harness                       | High   | Medium | ✅     |
-| G1 | Shared `OperationPanel` + smart output defaults (overwrite / save-as-new) | High | Medium | `[ ]`  |
-| G2 | Unified status bar + progress + Cancel; non-modal success feedback      | High   | Medium | `[ ]`  |
+| G1 | Smart output defaults (overwrite / save-as-new)                          | High   | Medium | ✅     |
+| G2 | Unified status bar + progress + Cancel; non-modal success feedback      | High   | Medium | ✅     |
 | G3 | Batch cleanup: drive the stack from combo data, file-count preview, dry-run | Medium | Low  | `[ ]`  |
 | G4 | Page-range UX: page count, inline validation, thumbnail picker          | High   | Medium | `[ ]`  |
 | G5 | Ordered file list (add/remove/reorder) for Merge and Images→PDF         | Medium | Low    | `[ ]`  |
@@ -156,12 +156,12 @@ The project is now an installable `pdfeditor` package:
         `workers.py`, `main_window.py`); update `pyproject.toml` packages.
   - [x] Add `pytest-qt` (dev dep) and `tests/test_gui_smoke.py` (offscreen window build).
 
-- **Phase 1 — Tier 1: intuitive core**
-  - [ ] `OperationPanel` abstraction reused by every operation.
-  - [ ] Smart output defaults (`<stem>_<op>.<ext>`) + "Save as new / Overwrite original".
-  - [ ] Unified status bar + progress + Cancel (global busy state).
-  - [ ] Non-modal success feedback ("Saved to … [Open]").
-  - [ ] Retire `action_to_index`; drive the Batch stack from combo item data.
+- **Phase 1 — Tier 1: intuitive core** — ✅ mostly done
+  - [x] Smart output defaults (`<stem>_<op>.<ext>`) auto-filled beside the source.
+  - [x] Unified status bar + progress + Cancel (batch cancel is honoured between files).
+  - [x] Non-modal success feedback (status-bar messages instead of dialogs).
+  - [x] Retired `action_to_index`; the Batch stack is driven from combo order.
+  - [ ] `OperationPanel` abstraction — **moved into Phase 3** (the document-centric redesign).
 
 - **Phase 2 — Tier 2: workflow ergonomics**
   - [ ] `PageRangeField` (page count + inline validation + "All pages").

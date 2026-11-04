@@ -10,6 +10,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable
 
 from .constants import (
     DEFAULT_EXCEL_PAPER_SIZE,
@@ -20,6 +21,7 @@ from .constants import (
 from .io_utils import (
     Deadline,
     OfficeProgressCallback,
+    OperationCancelled,
     _collect_input_files,
     _emit_office_progress,
     _ensure_pdf_output,
@@ -225,11 +227,14 @@ def _batch_libreoffice(
     progress_callback: OfficeProgressCallback | None,
     continue_on_error: bool,
     error_list: list[str],
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     """Convert documents with LibreOffice, mirroring the COM batch contract."""
     written_files: list[Path] = []
     total = len(files)
     for index, input_file in enumerate(files, start=1):
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled("Operation cancelled.")
         _emit_office_progress(progress_callback, index, total, input_file, "start")
         try:
             output_file = output_dir / f"{input_file.stem}.pdf"
@@ -314,13 +319,14 @@ def batch_word_to_pdf(
     progress_callback: OfficeProgressCallback | None = None,
     continue_on_error: bool = False,
     errors: list[str] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     files = _filter_office_batch_files(_collect_input_files(input_dir, pattern))
     error_list = errors if errors is not None else []
     total = len(files)
     if not _com_available():
         return _batch_libreoffice(
-            files, output_dir, progress_callback, continue_on_error, error_list
+            files, output_dir, progress_callback, continue_on_error, error_list, should_cancel
         )
     written_files: list[Path] = []
 
@@ -331,6 +337,9 @@ def batch_word_to_pdf(
                 index = start + offset
                 output_file = output_dir / f"{input_file.stem}.pdf"
                 _emit_office_progress(progress_callback, index, total, input_file, "start")
+
+                if should_cancel is not None and should_cancel():
+                    raise OperationCancelled("Operation cancelled.")
 
                 document = None
                 try:
@@ -377,6 +386,7 @@ def batch_excel_to_pdf(
     continue_on_error: bool = False,
     errors: list[str] | None = None,
     paper_size: str = DEFAULT_EXCEL_PAPER_SIZE,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     """Convert multiple Excel files to PDF in batch.
 
@@ -390,7 +400,7 @@ def batch_excel_to_pdf(
     total = len(files)
     if not _com_available():
         return _batch_libreoffice(
-            files, output_dir, progress_callback, continue_on_error, error_list
+            files, output_dir, progress_callback, continue_on_error, error_list, should_cancel
         )
     written_files: list[Path] = []
 
@@ -403,6 +413,9 @@ def batch_excel_to_pdf(
                     index = start + offset
                     output_file = output_dir / f"{input_file.stem}.pdf"
                     _emit_office_progress(progress_callback, index, total, input_file, "start")
+
+                    if should_cancel is not None and should_cancel():
+                        raise OperationCancelled("Operation cancelled.")
 
                     workbook = None
                     temp_pdfs: list[Path] = []

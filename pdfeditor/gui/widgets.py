@@ -6,11 +6,15 @@ from pathlib import Path
 
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..core import (
@@ -216,4 +220,134 @@ def _existing_dir_from_input(raw_text: str, label: str) -> Path:
         return _validate_existing_dir(text)
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"{label} not found: {Path(text).expanduser().resolve()}") from exc
+
+
+def _validate_page_spec(spec: str, total_pages: int | None = None) -> str | None:
+    """Return an error message for an invalid 1-based page spec, else None."""
+    text = spec.strip()
+    if not text:
+        return None
+    for raw_token in text.split(","):
+        token = raw_token.strip()
+        if not token:
+            return "Empty entry in page list."
+        if "-" in token:
+            start_text, _, end_text = token.partition("-")
+            if not (start_text.strip().isdigit() and end_text.strip().isdigit()):
+                return f"Invalid range: {token}"
+            start, end = int(start_text), int(end_text)
+            if start < 1 or start > end:
+                return f"Invalid range: {token}"
+            if total_pages is not None and end > total_pages:
+                return f"Page {end} exceeds {total_pages}"
+        elif token.isdigit():
+            value = int(token)
+            if value < 1:
+                return "Page numbers start at 1."
+            if total_pages is not None and value > total_pages:
+                return f"Page {value} exceeds {total_pages}"
+        else:
+            return f"Invalid page: {token}"
+    return None
+
+
+class PageRangeField(QWidget):
+    """A page-range input with inline validation and a page-count hint."""
+
+    def __init__(self, placeholder: str = "Optional pages, e.g. 1,3,5-7") -> None:
+        super().__init__()
+        self._total_pages: int | None = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.edit = DropLineEdit()
+        self.edit.setPlaceholderText(placeholder)
+        self.status = QLabel("")
+        self.status.setStyleSheet("color: #d93025;")
+        layout.addWidget(self.edit, stretch=1)
+        layout.addWidget(self.status)
+        self.edit.textChanged.connect(self._revalidate)
+
+    def value(self) -> str | None:
+        """Return the entered range, or None when blank (meaning "all pages")."""
+        text = self.edit.text().strip()
+        return text or None
+
+    def set_page_count(self, total_pages: int) -> None:
+        self._total_pages = total_pages
+        self._revalidate()
+
+    def _revalidate(self) -> None:
+        error = _validate_page_spec(self.edit.text(), self._total_pages)
+        if error:
+            self.status.setStyleSheet("color: #d93025;")
+            self.status.setText(error)
+            self.edit.setStyleSheet(
+                "QLineEdit { border: 1px solid #d93025; border-radius: 4px; padding: 4px; }"
+            )
+        else:
+            self.edit.setStyleSheet(DropLineEdit._BASE_STYLE)
+            if self._total_pages is not None:
+                self.status.setStyleSheet("color: #5f6368;")
+                self.status.setText(f"of {self._total_pages} page(s)")
+            else:
+                self.status.setText("")
+
+
+class OrderedFileList(QWidget):
+    """An ordered, reorderable list of input files (order matters for Merge)."""
+
+    def __init__(self, filter_text: str = "All Files (*.*)") -> None:
+        super().__init__()
+        self._filter_text = filter_text
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list.setToolTip("Drag items to reorder; the order is preserved.")
+        layout.addWidget(self.list)
+
+        button_row = QHBoxLayout()
+        add_button = QPushButton("Add…")
+        remove_button = QPushButton("Remove")
+        up_button = QPushButton("Move Up")
+        down_button = QPushButton("Move Down")
+        for widget in (add_button, remove_button, up_button, down_button):
+            button_row.addWidget(widget)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        add_button.clicked.connect(self._add_via_dialog)
+        remove_button.clicked.connect(self._remove_selected)
+        up_button.clicked.connect(lambda: self._move(-1))
+        down_button.clicked.connect(lambda: self._move(1))
+
+    def add_paths(self, paths: list[str]) -> None:
+        existing = {self.list.item(i).text() for i in range(self.list.count())}
+        for raw in paths:
+            text = str(Path(raw).expanduser().resolve())
+            if text not in existing:
+                self.list.addItem(text)
+                existing.add(text)
+
+    def paths(self) -> list[Path]:
+        return [Path(self.list.item(i).text()) for i in range(self.list.count())]
+
+    def _add_via_dialog(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(None, "Select files", "", self._filter_text)
+        if files:
+            self.add_paths(files)
+
+    def _remove_selected(self) -> None:
+        for item in self.list.selectedItems():
+            self.list.takeItem(self.list.row(item))
+
+    def _move(self, offset: int) -> None:
+        row = self.list.currentRow()
+        target = row + offset
+        if row < 0 or target < 0 or target >= self.list.count():
+            return
+        item = self.list.takeItem(row)
+        self.list.insertItem(target, item)
+        self.list.setCurrentRow(target)
 

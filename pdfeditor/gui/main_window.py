@@ -52,6 +52,8 @@ from ..core import (
     watermark_pdf,
 )
 from .widgets import (
+    OrderedFileList,
+    PageRangeField,
     _directory_row,
     _existing_dir_from_input,
     _existing_file_from_input,
@@ -135,6 +137,23 @@ class MainWindow(QMainWindow):
             self.batch_worker.request_cancel()
             self.status.showMessage("Cancelling…")
 
+    def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
+        """Keep a PageRangeField's page-count hint in sync with the input PDF."""
+
+        def refresh(*_args: object) -> None:
+            text = input_edit.text().strip().split(";")[0].strip()
+            if not text:
+                return
+            try:
+                from pypdf import PdfReader
+
+                count = len(PdfReader(str(Path(text).expanduser())).pages)
+            except Exception:  # noqa: BLE001
+                return
+            field.set_page_count(count)
+
+        input_edit.textChanged.connect(refresh)
+
     def _build_edit_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -158,8 +177,7 @@ class MainWindow(QMainWindow):
         self.rotate_angle.setSingleStep(90)
         self.rotate_angle.setValue(90)
 
-        self.rotate_pages = QLineEdit()
-        self.rotate_pages.setPlaceholderText("Optional page range, e.g. 1,3,5-7")
+        self.rotate_pages = PageRangeField("Optional pages to rotate, e.g. 1,3,5-7")
 
         rotate_button = QPushButton("Run Rotate")
         rotate_button.clicked.connect(self.run_rotate)
@@ -218,8 +236,7 @@ class MainWindow(QMainWindow):
             source_edit=self.delete_input,
             suffix="_deleted",
         )
-        self.delete_pages = QLineEdit()
-        self.delete_pages.setPlaceholderText("Required page range, e.g. 2,4,6-8")
+        self.delete_pages = PageRangeField("Pages to delete, e.g. 2,4,6-8")
 
         delete_button = QPushButton("Run Delete Pages")
         delete_button.clicked.connect(self.run_delete_pages)
@@ -256,6 +273,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(delete_box)
         layout.addWidget(reorder_box)
         layout.addStretch(1)
+        self._bind_page_count(self.rotate_pages, self.rotate_input)
+        self._bind_page_count(self.delete_pages, self.delete_input)
         return tab
 
     def _build_split_tab(self) -> QWidget:
@@ -264,8 +283,7 @@ class MainWindow(QMainWindow):
 
         split_in_row, self.split_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
         split_out_row, self.split_output_dir, _ = _directory_row("Output Folder", "Select Folder")
-        self.split_pages = QLineEdit()
-        self.split_pages.setPlaceholderText("Optional pages, e.g. 1,3,5-7")
+        self.split_pages = PageRangeField("Optional pages, e.g. 1,3,5-7")
         self.split_prefix = QLineEdit()
         self.split_prefix.setPlaceholderText("Optional filename prefix")
 
@@ -277,27 +295,25 @@ class MainWindow(QMainWindow):
         form.addRow("Pages", self.split_pages)
         form.addRow("Prefix", self.split_prefix)
         form.addRow(split_button)
+        self._bind_page_count(self.split_pages, self.split_input)
         return tab
 
     def _build_combine_tab(self) -> QWidget:
         tab = QWidget()
         form = QFormLayout(tab)
 
-        in_row, self.combine_inputs, _ = _file_row(
-            "Input PDFs", "Select Files", pick_many=True, filter_text="PDF Files (*.pdf)"
-        )
+        self.combine_inputs = OrderedFileList("PDF Files (*.pdf)")
         out_row, self.combine_output, _ = _save_row(
             "Output PDF",
             "Save As",
             filter_text="PDF Files (*.pdf)",
-            source_edit=self.combine_inputs,
             suffix="_combined",
         )
 
         combine_button = QPushButton("Run Combine")
         combine_button.clicked.connect(self.run_combine)
 
-        form.addRow(in_row)
+        form.addRow("Input PDFs (in order)", self.combine_inputs)
         form.addRow(out_row)
         form.addRow(combine_button)
         return tab
@@ -310,23 +326,17 @@ class MainWindow(QMainWindow):
         images_box = QGroupBox("Images to PDF")
         images_form = QFormLayout(images_box)
 
-        img_in_row, self.images_inputs, _ = _file_row(
-            "Input Images",
-            "Select Images",
-            pick_many=True,
-            filter_text="Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)",
-        )
+        self.images_inputs = OrderedFileList("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)")
         img_out_row, self.images_output, _ = _save_row(
             "Output PDF",
             "Save As",
             filter_text="PDF Files (*.pdf)",
-            source_edit=self.images_inputs,
         )
 
         images_button = QPushButton("Run Images to PDF")
         images_button.clicked.connect(self.run_images_to_pdf)
 
-        images_form.addRow(img_in_row)
+        images_form.addRow("Input Images (in order)", self.images_inputs)
         images_form.addRow(img_out_row)
         images_form.addRow(images_button)
 
@@ -609,7 +619,7 @@ class MainWindow(QMainWindow):
         try:
             input_file = _existing_file_from_input(self.rotate_input.text(), "Input PDF")
             output_file = _output_file_from_input(self.rotate_output.text(), "Output PDF")
-            pages = self.rotate_pages.text().strip() or None
+            pages = self.rotate_pages.value()
             angle = self.rotate_angle.value()
             logger.info("Starting rotation: %s -> %s", input_file, output_file)
             self._run_async(
@@ -640,7 +650,7 @@ class MainWindow(QMainWindow):
 
     def run_combine(self) -> None:
         try:
-            inputs = _paths_from_input(self.combine_inputs.text())
+            inputs = self.combine_inputs.paths()
             if not inputs:
                 raise ValueError("At least one input PDF is required.")
             for file_path in inputs:
@@ -655,7 +665,7 @@ class MainWindow(QMainWindow):
         try:
             input_file = _existing_file_from_input(self.delete_input.text(), "Input PDF")
             output_file = _output_file_from_input(self.delete_output.text(), "Output PDF")
-            pages = self.delete_pages.text().strip()
+            pages = self.delete_pages.value()
             if not pages:
                 raise ValueError("Pages to delete are required.")
             self._run_async(
@@ -683,7 +693,7 @@ class MainWindow(QMainWindow):
         try:
             input_file = _existing_file_from_input(self.split_input.text(), "Input PDF")
             output_dir = _output_dir_from_input(self.split_output_dir.text(), "Output Folder")
-            pages = self.split_pages.text().strip() or None
+            pages = self.split_pages.value()
             prefix = self.split_prefix.text().strip() or None
 
             def _operation() -> str:
@@ -696,7 +706,7 @@ class MainWindow(QMainWindow):
 
     def run_images_to_pdf(self) -> None:
         try:
-            inputs = _paths_from_input(self.images_inputs.text())
+            inputs = self.images_inputs.paths()
             if not inputs:
                 raise ValueError("At least one input image is required.")
             for file_path in inputs:

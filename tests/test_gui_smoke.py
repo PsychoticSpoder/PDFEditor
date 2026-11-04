@@ -80,6 +80,52 @@ def test_batch_count_preview(qtbot, tmp_path):
     assert "2 file(s)" in window.batch_count_label.text()
 
 
+def test_validate_page_spec():
+    from pdfeditor.gui.widgets import _validate_page_spec
+
+    assert _validate_page_spec("") is None
+    assert _validate_page_spec("1,3,5-7", 10) is None
+    assert _validate_page_spec("0") is not None
+    assert _validate_page_spec("5-1") is not None
+    assert _validate_page_spec("99", 10) is not None
+    assert _validate_page_spec("1,,2") is not None
+
+
+def test_page_range_field_flags_out_of_range(qtbot):
+    from pdfeditor.gui.widgets import PageRangeField
+
+    field = PageRangeField()
+    qtbot.addWidget(field)
+    field.set_page_count(3)
+    field.edit.setText("9")
+    assert "exceeds 3" in field.status.text()
+    field.edit.setText("2")
+    assert "of 3 page(s)" in field.status.text()
+
+
+def test_ordered_file_list_paths_and_reorder(qtbot, tmp_path):
+    from pdfeditor.gui.widgets import OrderedFileList
+
+    first = tmp_path / "a.pdf"
+    second = tmp_path / "b.pdf"
+    first.write_bytes(b"%PDF")
+    second.write_bytes(b"%PDF")
+
+    widget = OrderedFileList("PDF Files (*.pdf)")
+    qtbot.addWidget(widget)
+    widget.add_paths([str(first), str(second)])
+    assert widget.paths() == [first.resolve(), second.resolve()]
+
+    # Move the first item down one position.
+    widget.list.setCurrentRow(0)
+    widget._move(1)
+    assert widget.paths() == [second.resolve(), first.resolve()]
+
+    # Duplicates are ignored.
+    widget.add_paths([str(first)])
+    assert len(widget.paths()) == 2
+
+
 def test_default_output_path_suggests_sibling(tmp_path):
     from pdfeditor.gui.widgets import _default_output_path
 

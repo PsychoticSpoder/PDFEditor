@@ -142,8 +142,8 @@ The project is now an installable `pdfeditor` package:
 | G1 | Smart output defaults (overwrite / save-as-new)                          | High   | Medium | ✅     |
 | G2 | Unified status bar + progress + Cancel; non-modal success feedback      | High   | Medium | ✅     |
 | G3 | Batch cleanup: drive the stack from combo data, file-count preview, dry-run | Medium | Low  | ◐     |
-| G4 | Page-range UX: page count, inline validation, thumbnail picker          | High   | Medium | `[ ]`  |
-| G5 | Ordered file list (add/remove/reorder) for Merge and Images→PDF         | Medium | Low    | `[ ]`  |
+| G4 | Page-range UX: page count, inline validation, thumbnail picker          | High   | Medium | ◐      |
+| G5 | Ordered file list (add/remove/reorder) for Merge and Images→PDF         | Medium | Low    | ✅     |
 | G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | ◐      |
 | G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | `[ ]`  |
 | G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | `[ ]`  |
@@ -164,8 +164,8 @@ The project is now an installable `pdfeditor` package:
   - [ ] `OperationPanel` abstraction — **moved into Phase 3** (the document-centric redesign).
 
 - **Phase 2 — Tier 2: workflow ergonomics** — ◐ in progress
-  - [ ] `PageRangeField` (page count + inline validation + "All pages").
-  - [ ] `OrderedFileList` for Merge / Images→PDF.
+  - [x] `PageRangeField` (page count + inline validation + "All pages").
+  - [x] `OrderedFileList` for Merge / Images→PDF.
   - [x] Drop-target styling (dashed border + drag-over highlight).
   - [ ] Window-level drag-to-open.
   - [x] Batch: live file-count preview.

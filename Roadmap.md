@@ -156,12 +156,12 @@ The project is now an installable `pdfeditor` package:
         `workers.py`, `main_window.py`); update `pyproject.toml` packages.
   - [x] Add `pytest-qt` (dev dep) and `tests/test_gui_smoke.py` (offscreen window build).
 
-- **Phase 1 — Tier 1: intuitive core** — ✅ mostly done
+- **Phase 1 — Tier 1: intuitive core** — ✅ done
   - [x] Smart output defaults (`<stem>_<op>.<ext>`) auto-filled beside the source.
   - [x] Unified status bar + progress + Cancel (batch cancel is honoured between files).
   - [x] Non-modal success feedback (status-bar messages instead of dialogs).
   - [x] Retired `action_to_index`; the Batch stack is driven from combo order.
-  - [ ] `OperationPanel` abstraction — **moved into Phase 3** (the document-centric redesign).
+  - [x] `OperationPanel` abstraction — every file-in/file-out operation reuses it.
 
 - **Phase 2 — Tier 2: workflow ergonomics** — ✅ done
   - [x] `PageRangeField` (page count + inline validation + "All pages").

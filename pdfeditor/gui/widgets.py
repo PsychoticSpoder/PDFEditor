@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -374,4 +377,64 @@ class OrderedFileList(QWidget):
         item = self.list.takeItem(row)
         self.list.insertItem(target, item)
         self.list.setCurrentRow(target)
+
+
+class OperationPanel(QGroupBox):
+    """A reusable file-in / file-out operation panel.
+
+    Lays out an input row, an auto-filled output row, any parameter rows, and a primary
+    run button. The window connects :attr:`run_requested` to the operation's handler, so
+    every file-to-file operation shares the same structure and behaviour.
+    """
+
+    run_requested = Signal()
+
+    def __init__(
+        self,
+        title: str,
+        run_button_text: str,
+        input_label: str = "Input PDF",
+        output_label: str = "Output PDF",
+        filter_text: str = "PDF Files (*.pdf)",
+        source_suffix: str = "",
+        output_extension: str = ".pdf",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(title, parent)
+        self.form = QFormLayout(self)
+
+        self.input_row, self.input_edit, _ = _file_row(
+            input_label, "Browse", filter_text=filter_text
+        )
+        self.output_row, self.output_edit, _ = _save_row(
+            output_label,
+            "Save As",
+            filter_text=filter_text,
+            source_edit=self.input_edit,
+            suffix=source_suffix,
+            extension=output_extension,
+        )
+        self.form.addRow(self.input_row)
+        self.form.addRow(self.output_row)
+
+        self.run_button = QPushButton(run_button_text)
+        self.run_button.clicked.connect(self.run_requested)
+        self.form.addRow(self.run_button)
+
+    def add_param(self, label: str, widget: QWidget) -> QWidget:
+        """Insert a parameter row above the run button and return the widget."""
+        self.form.insertRow(self.form.rowCount() - 1, label, widget)
+        return widget
+
+    def add_input_row(self, label: str, filter_text: str = "All Files (*.*)") -> QLineEdit:
+        """Insert an extra file-input row above the run button; return its line edit."""
+        row, line_edit, _ = _file_row(label, "Browse", filter_text=filter_text)
+        self.form.insertRow(self.form.rowCount() - 1, row)
+        return line_edit
+
+    def input_path(self) -> str:
+        return self.input_edit.text()
+
+    def output_path(self) -> str:
+        return self.output_edit.text()
 

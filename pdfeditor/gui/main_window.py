@@ -64,6 +64,7 @@ from .preview import PdfPreview
 from .theme import apply_theme
 from .widgets import (
     DropLineEdit,
+    OperationPanel,
     OrderedFileList,
     PageRangeField,
     _directory_row,
@@ -318,52 +319,27 @@ class MainWindow(QMainWindow):
         input_edit.textChanged.connect(refresh)
 
     def _build_edit_panels(self) -> list[tuple[str, QWidget]]:
-        rotate_box = QGroupBox("Rotate")
-        rotate_form = QFormLayout(rotate_box)
-
-        rotate_in_row, self.rotate_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        rotate_out_row, self.rotate_output, _ = _save_row(
-            "Output PDF",
-            "Save As",
-            filter_text="PDF Files (*.pdf)",
-            source_edit=self.rotate_input,
-            suffix="_rotated",
-        )
-
+        self.rotate_panel = OperationPanel("Rotate", "Rotate", source_suffix="_rotated")
+        self.rotate_input = self.rotate_panel.input_edit
+        self.rotate_output = self.rotate_panel.output_edit
         self.rotate_angle = QSpinBox()
         self.rotate_angle.setMinimum(-360)
         self.rotate_angle.setMaximum(360)
         self.rotate_angle.setSingleStep(90)
         self.rotate_angle.setValue(90)
-
-        self.rotate_pages = PageRangeField("Optional pages to rotate, e.g. 1,3,5-7")
-
-        rotate_button = QPushButton("Rotate")
-        rotate_button.clicked.connect(self.run_rotate)
-
-        rotate_form.addRow(rotate_in_row)
-        rotate_form.addRow(rotate_out_row)
-        rotate_form.addRow("Angle", self.rotate_angle)
-        rotate_form.addRow("Pages", self.rotate_pages)
-        rotate_form.addRow(rotate_button)
-
-        watermark_box = QGroupBox("Watermark")
-        watermark_form = QFormLayout(watermark_box)
-
-        water_in_row, self.watermark_input, _ = _file_row(
-            "Input PDF", "Browse", filter_text="PDF Files (*.pdf)"
+        self.rotate_pages = self.rotate_panel.add_param(
+            "Pages", PageRangeField("Optional pages to rotate, e.g. 1,3,5-7")
         )
-        water_out_row, self.watermark_output, _ = _save_row(
-            "Output PDF",
-            "Save As",
-            filter_text="PDF Files (*.pdf)",
-            source_edit=self.watermark_input,
-            suffix="_watermarked",
-        )
+        self.rotate_panel.add_param("Angle", self.rotate_angle)
+        self.rotate_panel.run_requested.connect(self.run_rotate)
 
+        self.watermark_panel = OperationPanel(
+            "Watermark", "Apply Watermark", source_suffix="_watermarked"
+        )
+        self.watermark_input = self.watermark_panel.input_edit
+        self.watermark_output = self.watermark_panel.output_edit
         self.watermark_text = QLineEdit()
         self.watermark_text.setPlaceholderText("CONFIDENTIAL")
-
         self.watermark_opacity = QDoubleSpinBox()
         self.watermark_opacity.setDecimals(2)
         self.watermark_opacity.setSingleStep(0.05)
@@ -373,152 +349,81 @@ class MainWindow(QMainWindow):
         self.watermark_size.setMinimum(8)
         self.watermark_size.setMaximum(300)
         self.watermark_size.setValue(DEFAULT_WATERMARK_FONT_SIZE)
+        self.watermark_panel.add_param("Text", self.watermark_text)
+        self.watermark_panel.add_param("Opacity (0.0-1.0)", self.watermark_opacity)
+        self.watermark_panel.add_param("Font Size", self.watermark_size)
+        self.watermark_panel.run_requested.connect(self.run_watermark)
 
-        watermark_button = QPushButton("Apply Watermark")
-        watermark_button.clicked.connect(self.run_watermark)
-
-        watermark_form.addRow(water_in_row)
-        watermark_form.addRow(water_out_row)
-        watermark_form.addRow("Text", self.watermark_text)
-        watermark_form.addRow("Opacity (0.0-1.0)", self.watermark_opacity)
-        watermark_form.addRow("Font Size", self.watermark_size)
-        watermark_form.addRow(watermark_button)
-
-        delete_box = QGroupBox("Delete Pages")
-        delete_form = QFormLayout(delete_box)
-
-        delete_in_row, self.delete_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        delete_out_row, self.delete_output, _ = _save_row(
-            "Output PDF",
-            "Save As",
-            filter_text="PDF Files (*.pdf)",
-            source_edit=self.delete_input,
-            suffix="_deleted",
+        self.delete_panel = OperationPanel("Delete Pages", "Delete Pages", source_suffix="_deleted")
+        self.delete_input = self.delete_panel.input_edit
+        self.delete_output = self.delete_panel.output_edit
+        self.delete_pages = self.delete_panel.add_param(
+            "Pages", PageRangeField("Pages to delete, e.g. 2,4,6-8")
         )
-        self.delete_pages = PageRangeField("Pages to delete, e.g. 2,4,6-8")
+        self.delete_panel.run_requested.connect(self.run_delete_pages)
 
-        delete_button = QPushButton("Delete Pages")
-        delete_button.clicked.connect(self.run_delete_pages)
-
-        delete_form.addRow(delete_in_row)
-        delete_form.addRow(delete_out_row)
-        delete_form.addRow("Pages", self.delete_pages)
-        delete_form.addRow(delete_button)
-
-        reorder_box = QGroupBox("Reorder Pages")
-        reorder_form = QFormLayout(reorder_box)
-
-        reorder_in_row, self.reorder_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        reorder_out_row, self.reorder_output, _ = _save_row(
-            "Output PDF",
-            "Save As",
-            filter_text="PDF Files (*.pdf)",
-            source_edit=self.reorder_input,
-            suffix="_reordered",
-        )
+        self.reorder_panel = OperationPanel("Reorder Pages", "Reorder", source_suffix="_reordered")
+        self.reorder_input = self.reorder_panel.input_edit
+        self.reorder_output = self.reorder_panel.output_edit
         self.reorder_order = QLineEdit()
         self.reorder_order.setPlaceholderText("Required full order, e.g. 3,1,2")
+        self.reorder_panel.add_param("Order", self.reorder_order)
+        self.reorder_panel.run_requested.connect(self.run_reorder)
 
-        reorder_button = QPushButton("Reorder")
-        reorder_button.clicked.connect(self.run_reorder)
+        self.extract_panel = OperationPanel(
+            "Extract Pages", "Extract to New PDF", source_suffix="_extracted"
+        )
+        self.extract_input = self.extract_panel.input_edit
+        self.extract_output = self.extract_panel.output_edit
+        self.extract_pages = self.extract_panel.add_param(
+            "Pages", PageRangeField("Pages to extract, e.g. 1,3,5-7")
+        )
+        self.extract_panel.run_requested.connect(self.run_extract_pages)
 
-        reorder_form.addRow(reorder_in_row)
-        reorder_form.addRow(reorder_out_row)
-        reorder_form.addRow("Order", self.reorder_order)
-        reorder_form.addRow(reorder_button)
-
-        extract_box = QGroupBox("Extract Pages")
-        extract_form = QFormLayout(extract_box)
-        extract_in_row, self.extract_input, _ = _file_row(
-            "Input PDF", "Browse", filter_text="PDF Files (*.pdf)"
+        self.insert_panel = OperationPanel(
+            "Insert Pages", "Insert Pages", input_label="Base PDF", source_suffix="_inserted"
         )
-        extract_out_row, self.extract_output, _ = _save_row(
-            "Output PDF",
-            "Save As",
-            filter_text="PDF Files (*.pdf)",
-            source_edit=self.extract_input,
-            suffix="_extracted",
-        )
-        self.extract_pages = PageRangeField("Pages to extract, e.g. 1,3,5-7")
-        extract_button = QPushButton("Extract to New PDF")
-        extract_button.clicked.connect(self.run_extract_pages)
-        extract_form.addRow(extract_in_row)
-        extract_form.addRow(extract_out_row)
-        extract_form.addRow("Pages", self.extract_pages)
-        extract_form.addRow(extract_button)
-
-        insert_box = QGroupBox("Insert Pages")
-        insert_form = QFormLayout(insert_box)
-        insert_in_row, self.insert_input, _ = _file_row(
-            "Base PDF", "Browse", filter_text="PDF Files (*.pdf)"
-        )
-        insert_src_row, self.insert_file, _ = _file_row(
-            "Insert PDF", "Browse", filter_text="PDF Files (*.pdf)"
-        )
-        insert_out_row, self.insert_output, _ = _save_row(
-            "Output PDF",
-            "Save As",
-            filter_text="PDF Files (*.pdf)",
-            source_edit=self.insert_input,
-            suffix="_inserted",
-        )
+        self.insert_input = self.insert_panel.input_edit
+        self.insert_file = self.insert_panel.add_input_row("Insert PDF", "PDF Files (*.pdf)")
+        self.insert_output = self.insert_panel.output_edit
         self.insert_at = QSpinBox()
         self.insert_at.setMinimum(1)
         self.insert_at.setMaximum(100000)
         self.insert_at.setValue(1)
-        self.insert_pages_field = PageRangeField("Optional pages from the inserted PDF")
-        insert_button = QPushButton("Insert Pages")
-        insert_button.clicked.connect(self.run_insert_pages)
-        insert_form.addRow(insert_in_row)
-        insert_form.addRow(insert_src_row)
-        insert_form.addRow(insert_out_row)
-        insert_form.addRow("Insert before page", self.insert_at)
-        insert_form.addRow("Pages", self.insert_pages_field)
-        insert_form.addRow(insert_button)
+        self.insert_pages_field = self.insert_panel.add_param(
+            "Pages", PageRangeField("Optional pages from the inserted PDF")
+        )
+        self.insert_panel.add_param("Insert before page", self.insert_at)
+        self.insert_panel.run_requested.connect(self.run_insert_pages)
 
-        meta_box = QGroupBox("Metadata")
-        meta_form = QFormLayout(meta_box)
-        meta_in_row, self.meta_input, _ = _file_row(
-            "Input PDF", "Browse", filter_text="PDF Files (*.pdf)"
-        )
-        meta_out_row, self.meta_output, _ = _save_row(
-            "Output PDF",
-            "Save As",
-            filter_text="PDF Files (*.pdf)",
-            source_edit=self.meta_input,
-            suffix="_tagged",
-        )
+        self.meta_panel = OperationPanel("Metadata", "Save metadata", source_suffix="_tagged")
+        self.meta_input = self.meta_panel.input_edit
+        self.meta_output = self.meta_panel.output_edit
         self.meta_title = QLineEdit()
         self.meta_author = QLineEdit()
         self.meta_subject = QLineEdit()
         self.meta_keywords = QLineEdit()
-        meta_buttons = QHBoxLayout()
-        meta_show_button = QPushButton("Show current metadata")
-        meta_show_button.clicked.connect(self.run_show_metadata)
-        meta_save_button = QPushButton("Save metadata")
-        meta_save_button.clicked.connect(self.run_save_metadata)
-        meta_buttons.addWidget(meta_show_button)
-        meta_buttons.addWidget(meta_save_button)
-        meta_form.addRow(meta_in_row)
-        meta_form.addRow(meta_out_row)
-        meta_form.addRow("Title", self.meta_title)
-        meta_form.addRow("Author", self.meta_author)
-        meta_form.addRow("Subject", self.meta_subject)
-        meta_form.addRow("Keywords", self.meta_keywords)
-        meta_form.addRow(meta_buttons)
+        self.meta_panel.add_param("Title", self.meta_title)
+        self.meta_panel.add_param("Author", self.meta_author)
+        self.meta_panel.add_param("Subject", self.meta_subject)
+        self.meta_panel.add_param("Keywords", self.meta_keywords)
+        show_metadata_button = QPushButton("Show current metadata")
+        show_metadata_button.clicked.connect(self.run_show_metadata)
+        self.meta_panel.add_param("", show_metadata_button)
+        self.meta_panel.run_requested.connect(self.run_save_metadata)
 
         self._bind_page_count(self.rotate_pages, self.rotate_input)
         self._bind_page_count(self.delete_pages, self.delete_input)
         self._bind_page_count(self.extract_pages, self.extract_input)
         self._bind_page_count(self.insert_pages_field, self.insert_file)
         return [
-            ("Rotate", rotate_box),
-            ("Watermark", watermark_box),
-            ("Delete Pages", delete_box),
-            ("Reorder", reorder_box),
-            ("Extract Pages", extract_box),
-            ("Insert Pages", insert_box),
-            ("Metadata", meta_box),
+            ("Rotate", self.rotate_panel),
+            ("Watermark", self.watermark_panel),
+            ("Delete Pages", self.delete_panel),
+            ("Reorder", self.reorder_panel),
+            ("Extract Pages", self.extract_panel),
+            ("Insert Pages", self.insert_panel),
+            ("Metadata", self.meta_panel),
         ]
 
     def _build_split_tab(self) -> QWidget:

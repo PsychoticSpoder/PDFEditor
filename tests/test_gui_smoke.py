@@ -73,6 +73,29 @@ def test_window_accepts_dropped_pdfs(qtbot):
     assert window.acceptDrops() is True
 
 
+def test_operation_panel_wires_input_output_and_run(qtbot, tmp_path):
+    from PySide6.QtWidgets import QLineEdit
+
+    from pdfeditor.gui.widgets import OperationPanel
+
+    panel = OperationPanel("Rotate", "Rotate", source_suffix="_rotated")
+    qtbot.addWidget(panel)
+
+    calls: list[bool] = []
+    panel.run_requested.connect(lambda: calls.append(True))
+
+    # Output path auto-fills from the input beside it.
+    panel.input_edit.setText(str(tmp_path / "doc.pdf"))
+    assert panel.output_edit.text() == str(tmp_path / "doc_rotated.pdf")
+
+    # add_param returns the widget so callers can keep a reference.
+    extra = panel.add_param("Pages", QLineEdit())
+    assert isinstance(extra, QLineEdit)
+
+    panel.run_button.click()
+    assert calls == [True]
+
+
 def test_existing_file_from_input_reports_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         _existing_file_from_input(str(tmp_path / "missing.pdf"), "Input PDF")

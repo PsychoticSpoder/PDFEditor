@@ -20,7 +20,7 @@ from .core import (
     _validate_existing_dir,
     _validate_existing_file,
     _validate_output_dir,
-    _validate_output_path,
+    _validate_output_path as _core_validate_output_path,
     batch_delete_pages_pdfs,
     batch_excel_to_pdf,
     batch_pdf_to_text,
@@ -32,11 +32,15 @@ from .core import (
     batch_word_to_pdf,
     combine_pdfs,
     delete_page_range,
+    extract_pages,
+    get_metadata,
     images_to_pdf,
+    insert_pages,
     pdf_to_text,
     print_pdf,
     reorder_pages,
     rotate_pdf,
+    set_metadata,
     split_pdf,
     watermark_pdf,
 )
@@ -52,6 +56,46 @@ def configure_logging(level_name: str) -> None:
     )
 
 
+class _SkipExisting(Exception):
+    """Internal signal that an operation was skipped because the output exists."""
+
+
+# Populated from the parsed CLI arguments in main().
+_OUTPUT_GUARD: dict[str, bool] = {"overwrite": False, "skip_existing": False}
+
+
+def _validate_output_path(path_text: str) -> Path:
+    """Validate an output path, refusing to clobber existing files unless allowed.
+
+    Wraps :func:`pdfeditor.core._validate_output_path` so ``--overwrite`` /
+    ``--skip-existing`` apply uniformly to every single-file output command.
+    """
+    path = _core_validate_output_path(path_text)
+    if path.exists():
+        if _OUTPUT_GUARD["skip_existing"]:
+            raise _SkipExisting(f"output already exists: {path}")
+        if not _OUTPUT_GUARD["overwrite"]:
+            raise FileExistsError(
+                f"Output already exists: {path} "
+                "(use --overwrite to replace it or --skip-existing to ignore it)."
+            )
+    return path
+
+
+def _parse_metadata_pairs(items: list[str]) -> dict[str, str]:
+    """Parse repeated ``KEY=VALUE`` metadata options into a dict."""
+    metadata: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"Metadata entry must be KEY=VALUE: {item!r}")
+        key, _, value = item.partition("=")
+        key = key.strip()
+        if not key:
+            raise ValueError(f"Metadata key must not be empty: {item!r}")
+        metadata[key.strip()] = value.strip()
+    return metadata
+
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -60,6 +104,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging.")
     parser.add_argument("--quiet", "-q", action="store_true", help="Only log errors.")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow overwriting existing output files (default: refuse).",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip writing when the output file already exists.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate arguments and print the plan without writing any files.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     edit_parser = subparsers.add_parser("edit", help="Edit PDF files")
@@ -120,6 +179,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Complete 1-based page order, e.g. 3,1,2",
     )
 
+    extract_pages_parser = edit_subparsers.add_parser(
+        "extract-pages", help="Extract selected pages into a new PDF"
+    )
+    extract_pages_parser.add_argument("-i", "--input", required=True, help="Input PDF path")
+    extract_pages_parser.add_argument("-o", "--output", required=True, help="Output PDF path")
+    extract_pages_parser.add_argument(
+        "-p", "--pages", required=True, help="Pages to extract, e.g. 1,3,5-7"
+    )
+
+    insert_pages_parser = edit_subparsers.add_parser(
+        "insert-pages", help="Insert pages from another PDF"
+    )
+    insert_pages_parser.add_argument("-i", "--input", required=True, help="Base PDF path")
+    insert_pages_parser.add_argument("--insert", required=True, help="PDF whose pages are inserted")
+    insert_pages_parser.add_argument("-o", "--output", required=True, help="Output PDF path")
+    insert_pages_parser.add_argument(
+        "--at", type=int, required=True, help="1-based position to insert before"
+    )
+    insert_pages_parser.add_argument(
+        "-p", "--pages", default=None, help="Optional pages from the inserted PDF"
+    )
+
     split_parser = subparsers.add_parser("split", help="Split a PDF into one file per page")
     split_parser.add_argument("-i", "--input", required=True, help="Input PDF path")
     split_parser.add_argument(
@@ -167,6 +248,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     print_parser = subparsers.add_parser("print", help="Print a PDF on the default printer")
     print_parser.add_argument("-i", "--input", required=True, help="Input PDF path")
+
+    metadata_parser = subparsers.add_parser("metadata", help="Read or write PDF metadata")
+    metadata_parser.add_argument("-i", "--input", required=True, help="Input PDF path")
+    metadata_parser.add_argument(
+        "-o", "--output", default=None, help="Output PDF path (required when using --set)"
+    )
+    metadata_parser.add_argument(
+        "--set",
+        dest="metadata",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Metadata entry to set (repeatable), e.g. --set Title=Report",
+    )
 
     batch_parser = subparsers.add_parser("batch", help="Batch process folders")
     batch_subparsers = batch_parser.add_subparsers(dest="batch_command", required=True)
@@ -356,6 +451,13 @@ def main() -> int:
     else:
         configure_logging(os.environ.get("PDF_TOOL_LOG_LEVEL", "INFO"))
 
+    _OUTPUT_GUARD["overwrite"] = getattr(args, "overwrite", False)
+    _OUTPUT_GUARD["skip_existing"] = getattr(args, "skip_existing", False)
+
+    if getattr(args, "dry_run", False):
+        print(f"[dry-run] {args.command}: no files will be written.")
+        return 0
+
     try:
         logger.info(f"Starting command: {args.command}")
         if args.command == "edit":
@@ -374,6 +476,11 @@ def main() -> int:
                 delete_page_range(input_file, output_file, args.pages)
             elif args.edit_command == "reorder":
                 reorder_pages(input_file, output_file, args.order)
+            elif args.edit_command == "extract-pages":
+                extract_pages(input_file, output_file, args.pages)
+            elif args.edit_command == "insert-pages":
+                insert_file = _validate_existing_file(args.insert)
+                insert_pages(input_file, insert_file, output_file, args.at, args.pages)
 
         elif args.command == "split":
             input_file = _validate_existing_file(args.input)
@@ -502,6 +609,22 @@ def main() -> int:
                 )
                 print(f"Created {len(written_files)} files in: {output_dir}")
 
+        elif args.command == "metadata":
+            input_file = _validate_existing_file(args.input)
+            if args.metadata:
+                if not args.output:
+                    raise ValueError("--output is required when using --set.")
+                output_file = _validate_output_path(args.output)
+                set_metadata(input_file, output_file, _parse_metadata_pairs(args.metadata))
+                print(f"Wrote metadata to: {output_file}")
+            else:
+                entries = get_metadata(input_file)
+                if entries:
+                    for key, value in sorted(entries.items()):
+                        print(f"{key}: {value}")
+                else:
+                    print("(no metadata)")
+
         elif args.command == "dnd":
             if args.dnd_command == "combine":
                 input_files = [_validate_existing_file(path_text) for path_text in args.inputs]
@@ -539,6 +662,9 @@ def main() -> int:
                 excel_to_pdf(input_file, output_file, DEFAULT_EXCEL_PAPER_SIZE)
 
         print("Done.")
+        return 0
+    except _SkipExisting as exc:
+        print(f"Skipped: {exc}")
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"Error: {exc}", file=sys.stderr)

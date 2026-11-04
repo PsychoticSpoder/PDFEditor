@@ -50,3 +50,7 @@ OUTPUT_DIR_ACTIONS = frozenset(
 
 # Batch actions that drive Microsoft Office via COM (forced to a single worker).
 OFFICE_ACTIONS = frozenset({"word-to-pdf", "excel-to-pdf"})
+
+# Watchdog: force-kill a hung Word/Excel process if a single conversion step takes
+# longer than this many seconds. Set to 0 (or negative) to disable.
+OFFICE_OPERATION_TIMEOUT_SECONDS = 120.0

@@ -1,8 +1,8 @@
 # PDFEditor — Roadmap & Improvement Recommendations
 
-> **Implementation status:** Items 1–6 and 8 are **implemented** (✅). Items 7 and 9 are
-> **partially implemented** — remaining sub-tasks are left open as `[ ]` with notes.
-> All 31 automated tests pass (`pytest -q`).
+> **Implementation status:** Items 1–8 are **implemented** (✅). Item 9 is **partially
+> implemented** — page extract/insert and metadata editing shipped; PDF→image and
+> redaction remain open `[ ]` (deferred). All 39 automated tests pass (`pytest -q`).
 
 ## Summary of current state (updated)
 
@@ -25,7 +25,7 @@ The project is now an installable `pdfeditor` package:
 | 4 | De-duplicate CLI ↔ GUI validation       | Medium | Low    | ✅ Done      |
 | 5 | Office/COM robustness                   | High   | Medium | ✅ Done      |
 | 6 | Move GUI heavy work off main thread     | High   | Medium | ✅ Done      |
-| 7 | Behavior / UX improvements              | Medium | Medium | ◐ Partial   |
+| 7 | Behavior / UX improvements              | Medium | Medium | ✅ Done      |
 | 8 | Docs & security accuracy                | Medium | Low    | ✅ Done      |
 | 9 | Lower priority / nitpicks               | Low    | Low    | ◐ Partial   |
 
@@ -70,7 +70,8 @@ The project is now an installable `pdfeditor` package:
 - [x] Blank-page removal is opt-in (`skip_blank_pages=False` default) and every skipped page is
       logged; only the Excel combiner opts in.
 - [x] `_configure_excel_worksheet()` centralizes the repeated page-setup logic.
-- [ ] Watchdog/timeout to kill a hung Word/Excel process — **not implemented** (follow-up).
+- [x] Watchdog/timeout to kill a hung Word/Excel process (`Deadline` +
+      `OFFICE_OPERATION_TIMEOUT_SECONDS`, force-kill via `taskkill`).
 
 ## 6. GUI runs heavy work on the main thread ✅ (done)
 
@@ -79,7 +80,7 @@ The project is now an installable `pdfeditor` package:
 - [x] Watermark opacity uses a validated `QDoubleSpinBox` (0.0–1.0) instead of free-text parsing.
 - [x] Removed the duplicated hard-coded action lists (reuse `OUTPUT_DIR_ACTIONS` / `OFFICE_ACTIONS`).
 
-## 7. Behavior / UX improvements ◐ (partial)
+## 7. Behavior / UX improvements ✅ (done)
 
 - [x] Atomic writes: outputs are written to a temp file then `os.replace`d into place
       (`_atomic_write_bytes` / `_atomic_write_text` / `_atomic_write_pdf`).
@@ -87,8 +88,10 @@ The project is now an installable `pdfeditor` package:
       sizes each page to the image aspect ratio.
 - [x] `print_pdf` documented as best-effort/"submitted" (it does not confirm printing).
 - [x] `--verbose` / `--quiet` global flags and the `PDF_TOOL_LOG_LEVEL` environment variable.
-- [ ] `--overwrite` / `--skip-existing` and `--dry-run` flags — **not implemented** (follow-up).
-- [ ] Cross-platform LibreOffice (`soffice --headless`) fallback for Office conversion — **not implemented**.
+- [x] `--overwrite` / `--skip-existing` and `--dry-run` global flags (the default now
+      refuses to clobber an existing output).
+- [x] Cross-platform LibreOffice (`soffice --headless`) fallback for Office conversion
+      (used automatically when Office COM is unavailable).
 
 ## 8. Docs & security accuracy ✅ (done)
 
@@ -103,8 +106,12 @@ The project is now an installable `pdfeditor` package:
 - [x] Tool config for `black` / `ruff` / `mypy` added to `pyproject.toml`.
 - [x] Documented the `MAX_WORKERS` vs `_resolve_workers` auto-cap distinction (constants comment).
 - [x] Office swallowed exceptions now log at `debug` where practical.
-- [ ] `pre-commit` hook — **not implemented** (follow-up).
-- [ ] New features (PDF→image, page insert/extract, redaction, metadata editing) — **not implemented**.
+- [x] `pre-commit` hook added (`.pre-commit-config.yaml`).
+- [x] New features: page extract (`edit extract-pages`), page insert (`edit insert-pages`)
+      and metadata read/write (the `metadata` command).
+- [ ] PDF→image conversion (needs a renderer such as PyMuPDF/pdf2image) — **deferred**.
+- [ ] True redaction (content removal) — **deferred** (an overlay-only approach would be
+      misleading and unsafe).
 
 ---
 
@@ -114,12 +121,10 @@ The project is now an installable `pdfeditor` package:
 2. [x] `pyproject.toml` + `tests/` (pure helpers + integration tests).
 3. [x] Package restructure with CLI/GUI entry points; removed import-time logging config.
 4. [x] De-duplicated validation; moved GUI single-file operations onto a worker thread.
-5. [x] Hardened Office/COM (context manager, temp dirs). Watchdog/timeout remains a follow-up.
+5. [x] Hardened Office/COM (context manager, temp dirs, watchdog/timeout).
 
 ### Open follow-ups
 
-- Office watchdog/timeout.
-- `--overwrite` / `--skip-existing` / `--dry-run` CLI flags.
-- LibreOffice fallback for non-Windows Office conversion.
-- `pre-commit` hook and additional feature work.
+- PDF→image conversion (requires a rendering dependency such as PyMuPDF or pdf2image).
+- True redaction (content removal).
 

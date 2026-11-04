@@ -20,6 +20,7 @@ from .constants import (
     MIN_WORKERS,
     OFFICE_ACTIONS,
     OFFICE_BATCH_RESTART_EVERY,
+    OFFICE_OPERATION_TIMEOUT_SECONDS,
     OUTPUT_DIR_ACTIONS,
     WATERMARK_ROTATION_ANGLE,
 )
@@ -57,11 +58,15 @@ from .pdf_ops import (
     batch_watermark_pdfs,
     combine_pdfs,
     delete_page_range,
+    extract_pages,
+    get_metadata,
     images_to_pdf,
+    insert_pages,
     pdf_to_text,
     print_pdf,
     reorder_pages,
     rotate_pdf,
+    set_metadata,
     split_pdf,
     watermark_pdf,
 )

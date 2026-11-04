@@ -90,6 +90,84 @@ def reorder_pages(input_file: Path, output_file: Path, order_spec: str) -> None:
     _atomic_write_pdf(writer, output_file)
 
 
+def extract_pages(input_file: Path, output_file: Path, pages: str) -> None:
+    """Copy a subset of pages from one PDF into a new PDF.
+
+    Args:
+        input_file: Source PDF.
+        output_file: Destination PDF containing only the selected pages (in order).
+        pages: 1-based page selection, e.g. ``"1,3,5-7"``.
+    """
+    reader = PdfReader(str(input_file))
+    selected = sorted(_parse_page_range(pages, len(reader.pages)))
+    writer = PdfWriter()
+    for page_index in selected:
+        writer.add_page(reader.pages[page_index])
+    _atomic_write_pdf(writer, output_file)
+
+
+def insert_pages(
+    input_file: Path,
+    insert_file: Path,
+    output_file: Path,
+    position: int,
+    pages: str | None = None,
+) -> None:
+    """Insert the pages of ``insert_file`` into ``input_file`` at ``position``.
+
+    Args:
+        input_file: Base PDF.
+        insert_file: PDF whose pages are inserted.
+        output_file: Destination PDF.
+        position: 1-based index of the base page *before* which to insert. A value
+            greater than the base page count appends at the end.
+        pages: Optional 1-based selection of pages from ``insert_file`` (default: all).
+    """
+    base_reader = PdfReader(str(input_file))
+    insert_reader = PdfReader(str(insert_file))
+    base_count = len(base_reader.pages)
+
+    if position < 1 or position > base_count + 1:
+        raise ValueError(f"Insert position must be between 1 and {base_count + 1}.")
+
+    selected = _parse_page_range(pages, len(insert_reader.pages))
+    insert_indices = [index for index in range(len(insert_reader.pages)) if index in selected]
+
+    split_at = position - 1
+    writer = PdfWriter()
+    for page_index in range(split_at):
+        writer.add_page(base_reader.pages[page_index])
+    for page_index in insert_indices:
+        writer.add_page(insert_reader.pages[page_index])
+    for page_index in range(split_at, base_count):
+        writer.add_page(base_reader.pages[page_index])
+
+    _atomic_write_pdf(writer, output_file)
+
+
+def get_metadata(input_file: Path) -> dict[str, str]:
+    """Return the PDF document metadata (Title, Author, ...) as a plain dict."""
+    reader = PdfReader(str(input_file))
+    metadata = reader.metadata or {}
+    return {str(key).lstrip("/"): str(value) for key, value in metadata.items()}
+
+
+def set_metadata(input_file: Path, output_file: Path, metadata: dict[str, str]) -> None:
+    """Write a copy of ``input_file`` with the given metadata keys set.
+
+    Keys may be given with or without a leading ``/`` (e.g. ``Title`` or ``/Title``).
+    Keys that are not supplied are preserved from the source document.
+    """
+    reader = PdfReader(str(input_file))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+
+    to_set = {f"/{key.lstrip('/')}": value for key, value in metadata.items()}
+    writer.add_metadata(to_set)
+    _atomic_write_pdf(writer, output_file)
+
+
 def split_pdf(input_file: Path, output_dir: Path, pages: str | None, prefix: str | None) -> list[Path]:
     """Split a PDF into individual page files.
     

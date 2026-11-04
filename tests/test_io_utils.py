@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
 from pdfeditor.core.io_utils import (
+    Deadline,
     _atomic_write_bytes,
     _atomic_write_text,
     _collect_input_files,
@@ -78,3 +80,40 @@ def test_atomic_write_text(tmp_path):
     target = tmp_path / "out.txt"
     _atomic_write_text(target, "line1\nline2")
     assert target.read_text(encoding="utf-8") == "line1\nline2"
+
+
+def test_deadline_fires_on_timeout():
+    fired: list[bool] = []
+    deadline = Deadline(0.05, lambda: fired.append(True))
+    deadline.start()
+    time.sleep(0.2)
+    assert deadline.fired is True
+    assert fired == [True]
+
+
+def test_deadline_disabled_when_non_positive():
+    deadline = Deadline(0, lambda: None)
+    deadline.start()
+    time.sleep(0.05)
+    assert deadline.fired is False
+
+
+def test_deadline_cancel_prevents_fire():
+    fired: list[bool] = []
+    deadline = Deadline(0.05, lambda: fired.append(True))
+    deadline.start()
+    deadline.cancel()
+    time.sleep(0.15)
+    assert fired == []
+
+
+def test_deadline_bump_resets_timer():
+    fired: list[bool] = []
+    deadline = Deadline(0.15, lambda: fired.append(True))
+    deadline.start()
+    time.sleep(0.08)
+    deadline.bump()
+    time.sleep(0.08)
+    assert fired == []  # bumped before the first window elapsed
+    time.sleep(0.15)
+    assert fired == [True]

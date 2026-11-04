@@ -8,10 +8,14 @@ from pypdf import PdfReader
 from pdfeditor.core import (
     combine_pdfs,
     delete_page_range,
+    extract_pages,
+    get_metadata,
     images_to_pdf,
+    insert_pages,
     pdf_to_text,
     reorder_pages,
     rotate_pdf,
+    set_metadata,
     split_pdf,
     watermark_pdf,
 )
@@ -92,3 +96,34 @@ def test_images_to_pdf(make_image, tmp_path):
 def test_images_to_pdf_requires_input(tmp_path):
     with pytest.raises(ValueError):
         images_to_pdf([], tmp_path / "x.pdf")
+
+
+def test_extract_pages(make_pdf, tmp_path):
+    src = make_pdf(pages=4)
+    out = tmp_path / "extract.pdf"
+    extract_pages(src, out, "2,4")
+    assert len(PdfReader(str(out)).pages) == 2
+
+
+def test_insert_pages(make_pdf, tmp_path):
+    base = make_pdf("base.pdf", pages=2)
+    extra = make_pdf("extra.pdf", pages=2)
+    out = tmp_path / "inserted.pdf"
+    insert_pages(base, extra, out, position=2, pages=None)
+    assert len(PdfReader(str(out)).pages) == 4
+
+
+def test_insert_pages_out_of_range(make_pdf, tmp_path):
+    base = make_pdf("base.pdf", pages=2)
+    extra = make_pdf("extra.pdf", pages=1)
+    with pytest.raises(ValueError):
+        insert_pages(base, extra, tmp_path / "o.pdf", position=99, pages=None)
+
+
+def test_metadata_roundtrip(make_pdf, tmp_path):
+    src = make_pdf(pages=1)
+    out = tmp_path / "meta.pdf"
+    set_metadata(src, out, {"Title": "My Report", "Author": "Me"})
+    metadata = get_metadata(out)
+    assert metadata.get("Title") == "My Report"
+    assert metadata.get("Author") == "Me"

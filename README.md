@@ -44,7 +44,7 @@ py -m pip install -e .
 
 ```powershell
 # Install development dependencies
-py -m pip install pytest pytest-cov black ruff mypy
+py -m pip install pytest pytest-cov black ruff mypy pre-commit
 
 # Run tests
 pytest
@@ -56,7 +56,10 @@ black .
 ruff check .
 
 # Type checking
-mypy pdf_tool.py pdf_gui.py
+mypy pdfeditor
+
+# Install the pre-commit hooks
+pre-commit install
 ```
 
 ## 2. Command-Line Usage
@@ -82,9 +85,37 @@ py pdf_tool.py combine -i file1.pdf file2.pdf file3.pdf -o combined.pdf
 # Extract text from PDF
 py pdf_tool.py convert pdf-to-text -i input.pdf -o output.txt
 
+# Extract specific pages into a new PDF
+py pdf_tool.py edit extract-pages -i input.pdf -o pages.pdf -p "1,3,5-7"
+
+# Insert pages from another PDF before base page 2
+py pdf_tool.py edit insert-pages -i base.pdf --insert extra.pdf -o merged.pdf --at 2
+
+# Read or write PDF metadata
+py pdf_tool.py metadata -i input.pdf
+py pdf_tool.py metadata -i input.pdf --set Title="Quarterly Report" -o tagged.pdf
+
 # Print PDF
 py pdf_tool.py print -i input.pdf
 ```
+
+### Safety Flags & Dry Run
+
+These global flags go *before* the sub-command and apply to every command:
+
+```powershell
+# Preview the plan without writing anything
+pdf-tool --dry-run edit rotate -i input.pdf -o output.pdf -a 90
+
+# Overwrite existing outputs (the default is to refuse to clobber a file)
+pdf-tool --overwrite edit rotate -i input.pdf -o output.pdf -a 90
+
+# Skip a command whose output already exists (exits 0)
+pdf-tool --skip-existing split -i input.pdf -d out
+```
+
+By default the CLI refuses to overwrite an existing output file; pass `--overwrite`
+or `--skip-existing` to change that.
 
 ### Batch Operations
 
@@ -171,10 +202,13 @@ The GUI has tabs for:
 - Recommended: 0.1 to 0.3 for watermarks
 
 **Word/Excel conversion fails**
-- Ensure Microsoft Office is installed
+- Ensure Microsoft Office is installed (Windows). On other platforms install
+  LibreOffice (`soffice`) to use the cross-platform fallback.
 - Run with `--workers 1` for better stability
 - Close Office applications before batch conversion
 - Check for locked/temp files (starting with `~$`)
+- A single hung conversion is killed automatically after ~120s
+  (`OFFICE_OPERATION_TIMEOUT_SECONDS`)
 
 **"No files matched pattern"**
 - Verify the glob pattern matches your files

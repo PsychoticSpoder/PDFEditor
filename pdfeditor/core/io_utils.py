@@ -7,6 +7,7 @@ import contextlib
 import io
 import os
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -179,3 +180,50 @@ def _atomic_write_pdf(writer, path: Path) -> None:
     buffer = io.BytesIO()
     writer.write(buffer)
     _atomic_write_bytes(path, buffer.getvalue())
+
+
+class Deadline:
+    """Invoke a callback if a task is not (re)armed within ``timeout`` seconds.
+
+    Used as a watchdog to force-kill a hung Office process. ``timeout <= 0`` disables
+    it. ``bump()`` re-arms the timer, so long-running batches can reset it after each
+    successful step and still catch a single stuck conversion.
+    """
+
+    def __init__(self, timeout: float, on_timeout: Callable[[], None]) -> None:
+        self._timeout = timeout
+        self._on_timeout = on_timeout
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
+        self._fired = False
+
+    def start(self) -> None:
+        self.bump()
+
+    def bump(self) -> None:
+        with self._lock:
+            self._cancel_locked()
+            if self._timeout and self._timeout > 0:
+                self._timer = threading.Timer(self._timeout, self._fire)
+                self._timer.daemon = True
+                self._timer.start()
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancel_locked()
+
+    @property
+    def fired(self) -> bool:
+        return self._fired
+
+    def _cancel_locked(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _fire(self) -> None:
+        self._fired = True
+        try:
+            self._on_timeout()
+        except Exception:  # noqa: BLE001
+            pass

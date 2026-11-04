@@ -15,10 +15,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QListView,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -94,7 +96,7 @@ class _ThumbnailRenderer:
     event-loop ticks (a few at a time), keeping the UI responsive.
     """
 
-    def __init__(self, document, jobs, on_progress=None, chunk: int = 6) -> None:
+    def __init__(self, document, jobs, on_progress=None, chunk: int = 1) -> None:
         self._document = document
         self._jobs = jobs
         self._on_progress = on_progress
@@ -122,6 +124,7 @@ class _ThumbnailRenderer:
         if self._on_progress is not None:
             self._on_progress(end, len(self._jobs))
         if end < len(self._jobs):
+            # Yield to the event loop between pages so clicks and drags stay responsive.
             QTimer.singleShot(0, self._step)
 
 
@@ -277,15 +280,31 @@ class PageReorderDialog(QDialog):
         self.list = QListWidget()
         self.list.setViewMode(QListView.ViewMode.IconMode)
         self.list.setFlow(QListView.Flow.LeftToRight)
+        self.list.setWrapping(True)
+        self.list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list.setMovement(QListView.Movement.Static)
+        self.list.setIconSize(QSize(96, 128))
+        self.list.setGridSize(QSize(120, 176))
+        self.list.setUniformItemSizes(True)
+        self.list.setWordWrap(True)
+        self.list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list.setDragEnabled(True)
+        self.list.setAcceptDrops(True)
+        self.list.setDropIndicatorShown(True)
         self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.list.setMovement(QListView.Movement.Static)
-        self.list.setResizeMode(QListView.ResizeMode.Adjust)
-        self.list.setWrapping(True)
-        self.list.setIconSize(QSize(96, 128))
-        self.list.setGridSize(QSize(116, 176))
-        self.list.setSpacing(6)
         layout.addWidget(self.list)
+
+        controls = QHBoxLayout()
+        earlier_button = QPushButton("Move Earlier")
+        later_button = QPushButton("Move Later")
+        earlier_button.clicked.connect(lambda: self._move_selected(-1))
+        later_button.clicked.connect(lambda: self._move_selected(1))
+        controls.addWidget(earlier_button)
+        controls.addWidget(later_button)
+        controls.addStretch(1)
+        layout.addLayout(controls)
 
         document = QPdfDocument() if _QT_PDF_AVAILABLE else None
         page_count = 0
@@ -301,6 +320,8 @@ class PageReorderDialog(QDialog):
                 item = QListWidgetItem(str(index + 1))
                 item.setData(Qt.ItemDataRole.UserRole, index + 1)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+                # Pin the size so hit-testing stays correct when icons arrive later.
+                item.setSizeHint(QSize(120, 176))
                 self.list.addItem(item)
                 jobs.append(
                     lambda i=index, it=item: it.setIcon(
@@ -319,6 +340,15 @@ class PageReorderDialog(QDialog):
 
     def _update_progress(self, done: int, total: int) -> None:
         self.progress.setText(f"Rendering previews… {done}/{total}" if done < total else "")
+
+    def _move_selected(self, offset: int) -> None:
+        row = self.list.currentRow()
+        target = row + offset
+        if row < 0 or target < 0 or target >= self.list.count():
+            return
+        item = self.list.takeItem(row)
+        self.list.insertItem(target, item)
+        self.list.setCurrentRow(target)
 
     def order_spec(self) -> str:
         return ",".join(

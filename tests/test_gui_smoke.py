@@ -221,6 +221,67 @@ def test_page_reorder_dialog_order_spec(qtbot, make_pdf):
     assert dialog.order_spec() == "3,1,2"
 
 
+def test_page_reorder_dialog_items_are_laid_out(qtbot, make_pdf):
+    from pdfeditor.gui.preview import PageReorderDialog, qtpdf_available
+
+    if not qtpdf_available():
+        import pytest as _pytest
+
+        _pytest.skip("QtPdf not available")
+
+    src = make_pdf(pages=4)
+    dialog = PageReorderDialog(str(src))
+    qtbot.addWidget(dialog)
+    dialog.resize(760, 600)
+    dialog.show()
+    qtbot.wait(80)
+
+    viewport = dialog.list.viewport().rect()
+
+    def item_positions() -> list[tuple[int, int, int, int]]:
+        return [
+            (
+                dialog.list.visualItemRect(dialog.list.item(i)).x(),
+                dialog.list.visualItemRect(dialog.list.item(i)).y(),
+                dialog.list.visualItemRect(dialog.list.item(i)).width(),
+                dialog.list.visualItemRect(dialog.list.item(i)).height(),
+            )
+            for i in range(4)
+        ]
+
+    before = item_positions()
+    assert all(rect[2] > 0 and rect[3] > 0 for rect in before)
+    assert len({(rect[0], rect[1]) for rect in before}) == 4
+    assert all(
+        viewport.contains(dialog.list.visualItemRect(dialog.list.item(i))) for i in range(4)
+    )
+
+    # Let the lazy renderer set the thumbnails; layout/hit-testing must stay correct.
+    qtbot.wait(250)
+    after = item_positions()
+    assert all(rect[2] > 0 and rect[3] > 0 for rect in after)
+    assert len({(rect[0], rect[1]) for rect in after}) == 4
+    assert all(
+        viewport.contains(dialog.list.visualItemRect(dialog.list.item(i))) for i in range(4)
+    )
+
+
+def test_page_reorder_dialog_move_buttons(qtbot, make_pdf):
+    from pdfeditor.gui.preview import PageReorderDialog, qtpdf_available
+
+    if not qtpdf_available():
+        import pytest as _pytest
+
+        _pytest.skip("QtPdf not available")
+
+    src = make_pdf(pages=3)
+    dialog = PageReorderDialog(str(src))
+    qtbot.addWidget(dialog)
+    dialog.list.setCurrentRow(0)
+    dialog._move_selected(1)
+    assert dialog.order_spec() == "2,1,3"
+
+
 def test_page_picker_dialog_selected_spec(qtbot, make_pdf):
     from pdfeditor.gui.preview import PagePickerDialog, qtpdf_available
 

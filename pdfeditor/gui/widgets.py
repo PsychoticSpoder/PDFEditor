@@ -320,6 +320,43 @@ class PageRangeField(QWidget):
                 self.edit.setText(spec)
 
 
+class _DropListWidget(QListWidget):
+    """A reorderable list that also accepts files dropped from the OS."""
+
+    def __init__(self, owner: "OrderedFileList") -> None:
+        super().__init__()
+        self._owner = owner
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setAcceptDrops(True)
+
+    def _is_external(self, event) -> bool:
+        return event.source() is not self and event.mimeData().hasUrls()
+
+    def dragEnterEvent(self, event) -> None:
+        if event.source() is self or self._is_external(event):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if event.source() is self or self._is_external(event):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        if event.source() is self:
+            super().dropEvent(event)
+        elif self._is_external(event):
+            self._owner.add_paths(
+                [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+            )
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+
 class OrderedFileList(QWidget):
     """An ordered, reorderable list of input files (order matters for Merge)."""
 
@@ -328,10 +365,8 @@ class OrderedFileList(QWidget):
         self._filter_text = filter_text
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.list = QListWidget()
-        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.list.setToolTip("Drag items to reorder; the order is preserved.")
+        self.list = _DropListWidget(self)
+        self.list.setToolTip("Drag items to reorder, or drop files here to add them.")
         layout.addWidget(self.list)
 
         button_row = QHBoxLayout()

@@ -313,6 +313,25 @@ class MainWindow(QMainWindow):
         else:
             self.showMaximized()
 
+    def _pick_reorder(self) -> None:
+        """Open the drag-to-reorder thumbnail dialog for the current input PDF."""
+        text = self.reorder_input.text().strip()
+        if not text:
+            self._show_error(ValueError("Load an input PDF first."))
+            return
+        try:
+            path = _existing_file_from_input(text, "Input PDF")
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(exc)
+            return
+        from .preview import PageReorderDialog
+
+        dialog = PageReorderDialog(str(path), self)
+        if dialog.exec():
+            spec = dialog.order_spec()
+            if spec:
+                self.reorder_order.setText(spec)
+
     def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
         """Keep a PageRangeField's page-count hint in sync with the input PDF."""
 
@@ -379,7 +398,15 @@ class MainWindow(QMainWindow):
         self.reorder_output = self.reorder_panel.output_edit
         self.reorder_order = QLineEdit()
         self.reorder_order.setPlaceholderText("Required full order, e.g. 3,1,2")
-        self.reorder_panel.add_param("Order", self.reorder_order)
+        self.reorder_pick_button = QPushButton("Reorder…")
+        self.reorder_pick_button.setToolTip("Drag page thumbnails to set the order")
+        self.reorder_pick_button.clicked.connect(self._pick_reorder)
+        order_row_widget = QWidget()
+        order_row = QHBoxLayout(order_row_widget)
+        order_row.setContentsMargins(0, 0, 0, 0)
+        order_row.addWidget(self.reorder_order, stretch=1)
+        order_row.addWidget(self.reorder_pick_button)
+        self.reorder_panel.add_param("Order", order_row_widget)
         self.reorder_panel.run_requested.connect(self.run_reorder)
 
         self.extract_panel = OperationPanel(

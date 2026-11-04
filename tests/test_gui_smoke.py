@@ -198,6 +198,48 @@ def test_ordered_file_list_paths_and_reorder(qtbot, tmp_path):
     widget.add_paths([str(first)])
     assert len(widget.paths()) == 2
 
+    # The list accepts files dropped from the OS.
+    assert widget.list.acceptDrops() is True
+
+
+def test_page_reorder_dialog_order_spec(qtbot, make_pdf):
+    from pdfeditor.gui.preview import PageReorderDialog, qtpdf_available
+
+    if not qtpdf_available():
+        import pytest as _pytest
+
+        _pytest.skip("QtPdf not available")
+
+    src = make_pdf(pages=3)
+    dialog = PageReorderDialog(str(src))
+    qtbot.addWidget(dialog)
+    assert dialog.order_spec() == "1,2,3"
+
+    # Move the last page to the front (as a drag would).
+    item = dialog.list.takeItem(2)
+    dialog.list.insertItem(0, item)
+    assert dialog.order_spec() == "3,1,2"
+
+
+def test_page_picker_dialog_selected_spec(qtbot, make_pdf):
+    from pdfeditor.gui.preview import PagePickerDialog, qtpdf_available
+
+    if not qtpdf_available():
+        import pytest as _pytest
+
+        _pytest.skip("QtPdf not available")
+
+    src = make_pdf(pages=3)
+    dialog = PagePickerDialog(str(src), "1,3")
+    qtbot.addWidget(dialog)
+    assert dialog.selected_spec() == "1,3"
+
+
+def test_reorder_pick_button_present(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.reorder_pick_button.text().startswith("Reorder")
+
 
 def test_edit_tab_has_parity_controls(qtbot):
     window = MainWindow()

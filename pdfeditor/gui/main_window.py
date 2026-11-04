@@ -399,6 +399,9 @@ class MainWindow(QMainWindow):
         self.batch_workers.setValue(DEFAULT_WORKERS)
         self.batch_workers.setToolTip("Number of worker threads for batch processing")
 
+        self.batch_count_label = QLabel("")
+        self.batch_count_label.setStyleSheet("color: #1a73e8;")
+
         self.batch_continue_on_error = QCheckBox("Continue on error (Office conversions)")
         self.batch_continue_on_error.setChecked(True)
 
@@ -520,14 +523,17 @@ class MainWindow(QMainWindow):
         self.batch_log.setPlaceholderText("Batch progress and errors will appear here.")
         self.batch_log.document().setMaximumBlockCount(2000)
 
-        # Connect action change
+        # Connect action change and the live file-count preview
         self.batch_action.currentIndexChanged.connect(self._on_batch_action_changed)
+        self.batch_input_dir.textChanged.connect(self._update_batch_count)
+        self.batch_pattern.textChanged.connect(self._update_batch_count)
 
         # Add to form
         form.addRow("Action", self.batch_action)
         form.addRow(in_row)
         form.addRow(out_row)
         form.addRow("Pattern", self.batch_pattern)
+        form.addRow("", self.batch_count_label)
         form.addRow("Workers", self.batch_workers)
         form.addRow(self.batch_continue_on_error)
         form.addRow("Options", self.batch_action_stacked)
@@ -542,6 +548,24 @@ class MainWindow(QMainWindow):
         # Initialize field visibility
         self._on_batch_action_changed()
         return tab
+
+    def _update_batch_count(self) -> None:
+        """Show how many files currently match the input folder + pattern."""
+        directory = self.batch_input_dir.text().strip()
+        pattern = self.batch_pattern.text().strip() or DEFAULT_GLOB_PATTERN
+        if not directory:
+            self.batch_count_label.setText("")
+            return
+        path = Path(directory).expanduser()
+        if not path.is_dir():
+            self.batch_count_label.setText("")
+            return
+        try:
+            count = sum(1 for candidate in path.glob(pattern) if candidate.is_file())
+        except (OSError, ValueError):
+            self.batch_count_label.setText("")
+            return
+        self.batch_count_label.setText(f"{count} file(s) match '{pattern}'")
 
     def _on_batch_action_changed(self) -> None:
         """Update displayed fields based on selected batch action."""

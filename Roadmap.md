@@ -141,10 +141,10 @@ The project is now an installable `pdfeditor` package:
 | G0 | Modularize the GUI + add a pytest-qt test harness                       | High   | Medium | ✅     |
 | G1 | Smart output defaults (overwrite / save-as-new)                          | High   | Medium | ✅     |
 | G2 | Unified status bar + progress + Cancel; non-modal success feedback      | High   | Medium | ✅     |
-| G3 | Batch cleanup: drive the stack from combo data, file-count preview, dry-run | Medium | Low  | `[ ]`  |
+| G3 | Batch cleanup: drive the stack from combo data, file-count preview, dry-run | Medium | Low  | ◐     |
 | G4 | Page-range UX: page count, inline validation, thumbnail picker          | High   | Medium | `[ ]`  |
 | G5 | Ordered file list (add/remove/reorder) for Merge and Images→PDF         | Medium | Low    | `[ ]`  |
-| G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | `[ ]`  |
+| G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | ◐      |
 | G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | `[ ]`  |
 | G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | `[ ]`  |
 | G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | `[ ]`  |
@@ -163,11 +163,13 @@ The project is now an installable `pdfeditor` package:
   - [x] Retired `action_to_index`; the Batch stack is driven from combo order.
   - [ ] `OperationPanel` abstraction — **moved into Phase 3** (the document-centric redesign).
 
-- **Phase 2 — Tier 2: workflow ergonomics**
+- **Phase 2 — Tier 2: workflow ergonomics** — ◐ in progress
   - [ ] `PageRangeField` (page count + inline validation + "All pages").
   - [ ] `OrderedFileList` for Merge / Images→PDF.
-  - [ ] Drop-target styling + drag-over highlight + drag-to-open.
-  - [ ] Batch: live file-count preview, contextual options, Dry-run button.
+  - [x] Drop-target styling (dashed border + drag-over highlight).
+  - [ ] Window-level drag-to-open.
+  - [x] Batch: live file-count preview.
+  - [ ] Batch: contextual options + Dry-run button.
   - [ ] GUI parity: Extract Pages, Insert Pages, Metadata form.
 
 - **Phase 3 — Tier 1A: document-centric redesign**

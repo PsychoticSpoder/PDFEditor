@@ -23,20 +23,33 @@ from ..core import (
 
 
 class DropLineEdit(QLineEdit):
+    _BASE_STYLE = "QLineEdit { border: 1px dashed #9aa0a6; border-radius: 4px; padding: 4px; }"
+    _DRAG_STYLE = (
+        "QLineEdit { border: 2px dashed #1a73e8; border-radius: 4px; padding: 4px;"
+        " background-color: #e8f0fe; }"
+    )
+
     def __init__(self, allow_multiple: bool = False, directory_only: bool = False) -> None:
         super().__init__()
         self._allow_multiple = allow_multiple
         self._directory_only = directory_only
         self.setAcceptDrops(True)
+        self.setStyleSheet(self._BASE_STYLE)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         mime_data = event.mimeData()
         if mime_data.hasUrls() or mime_data.hasText():
+            self.setStyleSheet(self._DRAG_STYLE)
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
+    def dragLeaveEvent(self, event) -> None:
+        self.setStyleSheet(self._BASE_STYLE)
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event: QDropEvent) -> None:
+        self.setStyleSheet(self._BASE_STYLE)
         mime_data = event.mimeData()
         if mime_data.hasUrls():
             paths = [Path(url.toLocalFile()).expanduser().resolve() for url in mime_data.urls() if url.isLocalFile()]
@@ -74,6 +87,7 @@ def _file_row(
     layout = QHBoxLayout()
     line_edit = DropLineEdit(allow_multiple=pick_many)
     line_edit.setToolTip("Drag and drop files here.")
+    line_edit.setPlaceholderText("Drop file(s) here or click the button →")
     button = QPushButton(button_text)
     layout.addWidget(QLabel(label))
     layout.addWidget(line_edit, stretch=1)
@@ -113,6 +127,7 @@ def _save_row(
     layout = QHBoxLayout()
     line_edit = DropLineEdit()
     line_edit.setToolTip("Type a path or drag a file path here.")
+    line_edit.setPlaceholderText("Output path (auto-filled from the input)")
     button = QPushButton(button_text)
     layout.addWidget(QLabel(label))
     layout.addWidget(line_edit, stretch=1)
@@ -149,6 +164,7 @@ def _directory_row(label: str, button_text: str) -> tuple[QHBoxLayout, QLineEdit
     layout = QHBoxLayout()
     line_edit = DropLineEdit(directory_only=True)
     line_edit.setToolTip("Drag and drop a folder here.")
+    line_edit.setPlaceholderText("Drop a folder here or click the button →")
     button = QPushButton(button_text)
     layout.addWidget(QLabel(label))
     layout.addWidget(line_edit, stretch=1)

@@ -68,6 +68,18 @@ def test_batch_action_drives_options_stack(qtbot):
     assert window.batch_action_stacked.currentIndex() == last + 1
 
 
+def test_batch_count_preview(qtbot, tmp_path):
+    (tmp_path / "a.pdf").write_bytes(b"%PDF")
+    (tmp_path / "b.pdf").write_bytes(b"%PDF")
+    (tmp_path / "c.txt").write_text("x")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.batch_input_dir.setText(str(tmp_path))
+    window.batch_pattern.setText("*.pdf")
+    assert "2 file(s)" in window.batch_count_label.text()
+
+
 def test_default_output_path_suggests_sibling(tmp_path):
     from pdfeditor.gui.widgets import _default_output_path
 

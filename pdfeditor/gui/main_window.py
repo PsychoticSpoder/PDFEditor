@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -58,8 +59,10 @@ from ..core import (
     split_pdf,
     watermark_pdf,
 )
+from .preview import PdfPreview
 from .theme import apply_theme
 from .widgets import (
+    DropLineEdit,
     OrderedFileList,
     PageRangeField,
     _directory_row,
@@ -104,10 +107,30 @@ class MainWindow(QMainWindow):
         header.setStyleSheet("font-size: 16px; font-weight: 600;")
         root_layout.addWidget(header)
 
-        hint = QLabel("Tip: You can drag and drop files/folders into most path fields.")
+        hint = QLabel("Tip: open a PDF once below, or drag files/folders into any field.")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet("color: #666666;")
         root_layout.addWidget(hint)
+
+        # Shared "current document" bar: open once and reuse across operations.
+        self.setAcceptDrops(True)
+        doc_row = QHBoxLayout()
+        self.current_document = DropLineEdit()
+        self.current_document.setPlaceholderText("Drop or open a PDF to reuse across operations")
+        self.current_document.textChanged.connect(self._on_current_document_changed)
+        open_button = QPushButton("Open PDF")
+        open_button.clicked.connect(self._choose_current_document)
+        self.recent_combo = QComboBox()
+        self.recent_combo.setMinimumWidth(150)
+        self.recent_combo.activated.connect(self._on_recent_selected)
+        self.preview = PdfPreview()
+        doc_row.addWidget(QLabel("Current PDF"))
+        doc_row.addWidget(self.current_document, stretch=1)
+        doc_row.addWidget(open_button)
+        doc_row.addWidget(self.recent_combo)
+        doc_row.addWidget(self.preview)
+        root_layout.addLayout(doc_row)
+        self._refresh_recent_combo()
 
         # Left action sidebar + a stack of operation panels (document-centric IA).
         self.panel_list = QListWidget()
@@ -174,6 +197,77 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._settings.setValue("window_geometry", self.saveGeometry())
         super().closeEvent(event)
+
+    def _recent_documents(self) -> list[str]:
+        value = self._settings.value("recent_documents", [])
+        if isinstance(value, str):
+            return [value] if value else []
+        return [str(item) for item in (value or [])]
+
+    def _refresh_recent_combo(self) -> None:
+        self.recent_combo.blockSignals(True)
+        self.recent_combo.clear()
+        self.recent_combo.addItem("Recent...", "")
+        for path in self._recent_documents():
+            self.recent_combo.addItem(Path(path).name, path)
+        self.recent_combo.blockSignals(False)
+
+    def _remember_document(self, path: str) -> None:
+        recents = [item for item in self._recent_documents() if item != path]
+        recents.insert(0, path)
+        self._settings.setValue("recent_documents", recents[:10])
+        self._refresh_recent_combo()
+
+    def _on_recent_selected(self, index: int) -> None:
+        path = self.recent_combo.itemData(index)
+        if path:
+            self.current_document.setText(str(path))
+
+    def _choose_current_document(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
+        if file_name:
+            self.current_document.setText(file_name)
+
+    def _on_current_document_changed(self, text: str) -> None:
+        path = text.strip()
+        self.preview.set_document(path or None)
+        if not path:
+            return
+        # Reuse the current document across every single-file operation.
+        for edit in (
+            self.rotate_input,
+            self.watermark_input,
+            self.delete_input,
+            self.reorder_input,
+            self.extract_input,
+            self.insert_input,
+            self.meta_input,
+            self.split_input,
+            self.print_input,
+        ):
+            edit.setText(path)
+        for field in (
+            self.rotate_pages,
+            self.delete_pages,
+            self.extract_pages,
+            self.split_pages,
+        ):
+            field.set_document(path)
+        self._remember_document(path)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:
+        urls = [url for url in event.mimeData().urls() if url.isLocalFile()]
+        if urls:
+            self.current_document.setText(urls[0].toLocalFile())
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
     def _bind_page_count(self, field: PageRangeField, input_edit: QLineEdit) -> None:
         """Keep a PageRangeField's page-count hint in sync with the input PDF."""

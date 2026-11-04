@@ -35,6 +35,28 @@ def test_sidebar_drives_panel_stack(qtbot):
     assert window.panel_stack.currentIndex() == 2
 
 
+def test_format_and_parse_page_selection():
+    from pdfeditor.gui.preview import _format_page_selection, _parse_spec_to_pages
+
+    assert _format_page_selection([1, 2, 3, 5, 7, 8]) == "1-3,5,7-8"
+    assert _format_page_selection([]) == ""
+    assert _parse_spec_to_pages("1,3,5-7") == {1, 3, 5, 6, 7}
+    assert _parse_spec_to_pages("") == set()
+
+
+def test_current_document_propagates_to_panels(qtbot, tmp_path):
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"%PDF")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.current_document.setText(str(src))
+
+    assert window.rotate_input.text() == str(src)
+    assert window.split_input.text() == str(src)
+    assert window.print_input.text() == str(src)
+
+
 def test_existing_file_from_input_reports_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         _existing_file_from_input(str(tmp_path / "missing.pdf"), "Input PDF")

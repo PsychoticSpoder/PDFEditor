@@ -146,7 +146,7 @@ The project is now an installable `pdfeditor` package:
 | G5 | Ordered file list (add/remove/reorder) for Merge and Images→PDF         | Medium | Low    | ✅     |
 | G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | ◐      |
 | G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | ✅     |
-| G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | ◐     |
+| G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | ✅     |
 | G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | ◐     |
 
 ### 10.3 Phased plan
@@ -172,11 +172,12 @@ The project is now an installable `pdfeditor` package:
   - [x] Batch: Dry Run button (workers/continue-on-error already enable contextually).
   - [x] GUI parity: Extract Pages, Insert Pages, Metadata form.
 
-- **Phase 3 — Tier 1A: document-centric redesign** — ◐ in progress
+- **Phase 3 — Tier 1A: document-centric redesign** — ✅ done
   - [x] Left action sidebar + `QStackedWidget` of operation panels (replaces the flat tab bar).
-  - [ ] Shared Input/Output bar.
-  - [ ] "Current document" state so operations reuse the loaded input.
-  - [ ] Optional `PdfPreview` + `PagePickerDialog` (PySide6 `QtPdf`, no new dependency).
+  - [x] Shared "current document" bar (open once; auto-fills every operation's input + outputs).
+  - [x] `PdfPreview` first-page thumbnail + page count, wired to the current document.
+  - [x] `PagePickerDialog` thumbnail grid (via bundled QtPdf) → "Pick…" on page-range fields.
+  - [x] Window-level drag-to-open (drop a PDF onto the window).
 
 - **Phase 4 — Tier 3: polish** — ◐ in progress
   - [x] `gui/theme.py` stylesheet (spacing, group titles, hover states).

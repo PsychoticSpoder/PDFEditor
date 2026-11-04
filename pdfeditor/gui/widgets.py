@@ -265,6 +265,12 @@ class PageRangeField(QWidget):
         self.status.setStyleSheet("color: #d93025;")
         layout.addWidget(self.edit, stretch=1)
         layout.addWidget(self.status)
+        self.pick_button = QPushButton("Pick…")
+        self.pick_button.setToolTip("Choose pages from a preview")
+        self.pick_button.setVisible(False)
+        self.pick_button.clicked.connect(self._pick_pages)
+        layout.addWidget(self.pick_button)
+        self._document: str | None = None
         self.edit.textChanged.connect(self._revalidate)
 
     def value(self) -> str | None:
@@ -291,6 +297,24 @@ class PageRangeField(QWidget):
                 self.status.setText(f"of {self._total_pages} page(s)")
             else:
                 self.status.setText("")
+
+    def set_document(self, path: str | None) -> None:
+        """Remember the PDF to pick pages from (shows the picker button if possible)."""
+        self._document = path
+        from .preview import qtpdf_available
+
+        self.pick_button.setVisible(bool(path) and qtpdf_available())
+
+    def _pick_pages(self) -> None:
+        if not self._document:
+            return
+        from .preview import PagePickerDialog
+
+        dialog = PagePickerDialog(self._document, self.edit.text().strip(), self)
+        if dialog.exec():
+            spec = dialog.selected_spec()
+            if spec:
+                self.edit.setText(spec)
 
 
 class OrderedFileList(QWidget):

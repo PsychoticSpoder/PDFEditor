@@ -126,6 +126,28 @@ def test_ordered_file_list_paths_and_reorder(qtbot, tmp_path):
     assert len(widget.paths()) == 2
 
 
+def test_edit_tab_has_parity_controls(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.extract_pages is not None
+    assert window.insert_pages_field is not None
+    assert window.meta_title is not None
+
+
+def test_batch_dry_run_lists_files(qtbot, tmp_path):
+    (tmp_path / "a.pdf").write_bytes(b"%PDF")
+    (tmp_path / "b.pdf").write_bytes(b"%PDF")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.batch_input_dir.setText(str(tmp_path))
+    window.batch_pattern.setText("*.pdf")
+    window.run_batch_dry_run()
+    log = window.batch_log.toPlainText()
+    assert "a.pdf" in log and "b.pdf" in log
+    assert "dry-run" in log
+
+
 def test_default_output_path_suggests_sibling(tmp_path):
     from pdfeditor.gui.widgets import _default_output_path
 

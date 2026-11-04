@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -43,11 +44,15 @@ from ..core import (
     OUTPUT_DIR_ACTIONS,
     combine_pdfs,
     delete_page_range,
+    extract_pages,
+    get_metadata,
     images_to_pdf,
+    insert_pages,
     pdf_to_text,
     print_pdf,
     reorder_pages,
     rotate_pdf,
+    set_metadata,
     split_pdf,
     watermark_pdf,
 )
@@ -268,13 +273,98 @@ class MainWindow(QMainWindow):
         reorder_form.addRow("Order", self.reorder_order)
         reorder_form.addRow(reorder_button)
 
+        extract_box = QGroupBox("Extract Pages")
+        extract_form = QFormLayout(extract_box)
+        extract_in_row, self.extract_input, _ = _file_row(
+            "Input PDF", "Browse", filter_text="PDF Files (*.pdf)"
+        )
+        extract_out_row, self.extract_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.extract_input,
+            suffix="_extracted",
+        )
+        self.extract_pages = PageRangeField("Pages to extract, e.g. 1,3,5-7")
+        extract_button = QPushButton("Run Extract Pages")
+        extract_button.clicked.connect(self.run_extract_pages)
+        extract_form.addRow(extract_in_row)
+        extract_form.addRow(extract_out_row)
+        extract_form.addRow("Pages", self.extract_pages)
+        extract_form.addRow(extract_button)
+
+        insert_box = QGroupBox("Insert Pages")
+        insert_form = QFormLayout(insert_box)
+        insert_in_row, self.insert_input, _ = _file_row(
+            "Base PDF", "Browse", filter_text="PDF Files (*.pdf)"
+        )
+        insert_src_row, self.insert_file, _ = _file_row(
+            "Insert PDF", "Browse", filter_text="PDF Files (*.pdf)"
+        )
+        insert_out_row, self.insert_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.insert_input,
+            suffix="_inserted",
+        )
+        self.insert_at = QSpinBox()
+        self.insert_at.setMinimum(1)
+        self.insert_at.setMaximum(100000)
+        self.insert_at.setValue(1)
+        self.insert_pages_field = PageRangeField("Optional pages from the inserted PDF")
+        insert_button = QPushButton("Run Insert Pages")
+        insert_button.clicked.connect(self.run_insert_pages)
+        insert_form.addRow(insert_in_row)
+        insert_form.addRow(insert_src_row)
+        insert_form.addRow(insert_out_row)
+        insert_form.addRow("Insert before page", self.insert_at)
+        insert_form.addRow("Pages", self.insert_pages_field)
+        insert_form.addRow(insert_button)
+
+        meta_box = QGroupBox("Metadata")
+        meta_form = QFormLayout(meta_box)
+        meta_in_row, self.meta_input, _ = _file_row(
+            "Input PDF", "Browse", filter_text="PDF Files (*.pdf)"
+        )
+        meta_out_row, self.meta_output, _ = _save_row(
+            "Output PDF",
+            "Save As",
+            filter_text="PDF Files (*.pdf)",
+            source_edit=self.meta_input,
+            suffix="_tagged",
+        )
+        self.meta_title = QLineEdit()
+        self.meta_author = QLineEdit()
+        self.meta_subject = QLineEdit()
+        self.meta_keywords = QLineEdit()
+        meta_buttons = QHBoxLayout()
+        meta_show_button = QPushButton("Show current metadata")
+        meta_show_button.clicked.connect(self.run_show_metadata)
+        meta_save_button = QPushButton("Save metadata")
+        meta_save_button.clicked.connect(self.run_save_metadata)
+        meta_buttons.addWidget(meta_show_button)
+        meta_buttons.addWidget(meta_save_button)
+        meta_form.addRow(meta_in_row)
+        meta_form.addRow(meta_out_row)
+        meta_form.addRow("Title", self.meta_title)
+        meta_form.addRow("Author", self.meta_author)
+        meta_form.addRow("Subject", self.meta_subject)
+        meta_form.addRow("Keywords", self.meta_keywords)
+        meta_form.addRow(meta_buttons)
+
         layout.addWidget(rotate_box)
         layout.addWidget(watermark_box)
         layout.addWidget(delete_box)
         layout.addWidget(reorder_box)
+        layout.addWidget(extract_box)
+        layout.addWidget(insert_box)
+        layout.addWidget(meta_box)
         layout.addStretch(1)
         self._bind_page_count(self.rotate_pages, self.rotate_input)
         self._bind_page_count(self.delete_pages, self.delete_input)
+        self._bind_page_count(self.extract_pages, self.extract_input)
+        self._bind_page_count(self.insert_pages_field, self.insert_file)
         return tab
 
     def _build_split_tab(self) -> QWidget:
@@ -522,6 +612,8 @@ class MainWindow(QMainWindow):
         # Run button and status
         self.run_batch_button = QPushButton("Run Batch Operation")
         self.run_batch_button.clicked.connect(self.run_batch_operation)
+        self.dry_run_button = QPushButton("Dry Run (preview matching files)")
+        self.dry_run_button.clicked.connect(self.run_batch_dry_run)
 
         self.batch_status = QLabel("Idle")
         self.batch_progress = QProgressBar()
@@ -548,6 +640,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.batch_continue_on_error)
         form.addRow("Options", self.batch_action_stacked)
         form.addRow(self.run_batch_button)
+        form.addRow(self.dry_run_button)
         form.addRow("Status", self.batch_status)
         form.addRow("Progress", self.batch_progress)
 
@@ -735,6 +828,64 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
 
+    def run_extract_pages(self) -> None:
+        try:
+            input_file = _existing_file_from_input(self.extract_input.text(), "Input PDF")
+            output_file = _output_file_from_input(self.extract_output.text(), "Output PDF")
+            pages = self.extract_pages.value()
+            if not pages:
+                raise ValueError("Pages to extract are required.")
+            self._run_async(
+                lambda: extract_pages(input_file, output_file, pages),
+                "Extract pages complete.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(exc)
+
+    def run_insert_pages(self) -> None:
+        try:
+            input_file = _existing_file_from_input(self.insert_input.text(), "Base PDF")
+            insert_file = _existing_file_from_input(self.insert_file.text(), "Insert PDF")
+            output_file = _output_file_from_input(self.insert_output.text(), "Output PDF")
+            position = self.insert_at.value()
+            pages = self.insert_pages_field.value()
+            self._run_async(
+                lambda: insert_pages(input_file, insert_file, output_file, position, pages),
+                "Insert pages complete.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(exc)
+
+    def run_show_metadata(self) -> None:
+        try:
+            input_file = _existing_file_from_input(self.meta_input.text(), "Input PDF")
+            entries = get_metadata(input_file)
+            self.meta_title.setText(entries.get("Title", ""))
+            self.meta_author.setText(entries.get("Author", ""))
+            self.meta_subject.setText(entries.get("Subject", ""))
+            self.meta_keywords.setText(entries.get("Keywords", ""))
+            self.status.showMessage(f"Loaded metadata from {input_file.name}", 8000)
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(exc)
+
+    def run_save_metadata(self) -> None:
+        try:
+            input_file = _existing_file_from_input(self.meta_input.text(), "Input PDF")
+            output_file = _output_file_from_input(self.meta_output.text(), "Output PDF")
+            metadata = {
+                "Title": self.meta_title.text(),
+                "Author": self.meta_author.text(),
+                "Subject": self.meta_subject.text(),
+                "Keywords": self.meta_keywords.text(),
+            }
+            metadata = {key: value for key, value in metadata.items() if value}
+            self._run_async(
+                lambda: set_metadata(input_file, output_file, metadata),
+                "Metadata saved.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(exc)
+
     def run_batch_operation(self) -> None:
         try:
             if self.batch_thread is not None and self.batch_thread.isRunning():
@@ -830,6 +981,33 @@ class MainWindow(QMainWindow):
 
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
+
+    def run_batch_dry_run(self) -> None:
+        """List the files a batch would process without writing anything."""
+        action = str(self.batch_action.currentData())
+        directory = self.batch_input_dir.text().strip()
+        pattern = self.batch_pattern.text().strip() or DEFAULT_GLOB_PATTERN
+        self.batch_log.clear()
+        if not directory:
+            self.batch_log.appendPlainText("No input folder selected.")
+            return
+        path = Path(directory).expanduser()
+        if not path.is_dir():
+            self.batch_log.appendPlainText(f"Input folder not found: {path}")
+            return
+        try:
+            files = sorted(candidate for candidate in path.glob(pattern) if candidate.is_file())
+        except (OSError, ValueError) as exc:
+            self.batch_log.appendPlainText(f"Invalid pattern: {exc}")
+            return
+        self.batch_log.appendPlainText(f"[dry-run] Action: {action}")
+        self.batch_log.appendPlainText(f"[dry-run] Pattern: {pattern}")
+        self.batch_log.appendPlainText(f"[dry-run] {len(files)} file(s) would be processed:")
+        for file_path in files[:50]:
+            self.batch_log.appendPlainText(f"  - {file_path.name}")
+        if len(files) > 50:
+            self.batch_log.appendPlainText(f"  ... and {len(files) - 50} more")
+        self.status.showMessage("Dry run complete (no files written).", 8000)
 
     def _run_async(self, operation: Callable[[], str | None], success_message: str) -> None:
         """Run a single-file operation off the GUI thread so the window stays responsive."""

@@ -5,17 +5,21 @@ Skipped automatically when PySide6/pytest-qt are unavailable, like the other GUI
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytest.importorskip("PySide6")
 pytest.importorskip("pytestqt")
 
 from pypdf import PdfReader  # noqa: E402
-from PySide6.QtGui import QAction  # noqa: E402
+from PySide6.QtCore import QSize, QSizeF  # noqa: E402
+from PySide6.QtGui import QAction, QImage  # noqa: E402
+from PySide6.QtWidgets import QListWidgetItem  # noqa: E402
 
 from pdfeditor.gui import MainWindow  # noqa: E402
 from pdfeditor.gui import organizer as org  # noqa: E402
-from pdfeditor.gui.preview import qtpdf_available  # noqa: E402
+from pdfeditor.gui.preview import _ThumbnailWorker, qtpdf_available  # noqa: E402
 from pdfeditor.gui.widgets import PageGridWidget  # noqa: E402
 
 
@@ -39,6 +43,15 @@ class _FakeFileDialog:
 
 def _page_texts(path) -> list[str]:
     return [(page.extract_text() or "").strip() for page in PdfReader(str(path)).pages]
+
+
+def _page_numbers(path) -> list[int]:
+    """The ``Page N`` marker written by the make_pdf fixture, in document order."""
+    numbers: list[int] = []
+    for text in _page_texts(path):
+        match = re.search(r"Page (\d+)", text)
+        numbers.append(int(match.group(1)) if match else -1)
+    return numbers
 
 
 def _open(path, qtbot) -> org.PageOrganizerDialog:
@@ -117,9 +130,8 @@ def test_organizer_context_menu_exposes_every_page_action(qtbot, make_pdf):
         "Rotate Right",
         "Rotate 180°",
         "Delete Pages",
-        "Extract Selected to PDF…",
+        "Export Pages…",
         "Insert Pages…",
-        "Split Pages…",
         "Watermark…",
         "Metadata…",
         "Revert to Original",
@@ -198,20 +210,20 @@ def test_organizer_edits_metadata(qtbot, make_pdf, monkeypatch):
     assert metadata["Author"] == "QA"
 
 
-def test_organizer_extracts_splits_and_saves(qtbot, make_pdf, tmp_path, monkeypatch):
+def test_organizer_exports_single_and_per_page_and_saves(qtbot, make_pdf, tmp_path, monkeypatch):
     _needs_qtpdf()
     dialog = _open(make_pdf(pages=3), qtbot)
     monkeypatch.setattr(org, "QFileDialog", _FakeFileDialog)
 
     _FakeFileDialog.path = str(tmp_path / "picked.pdf")
     dialog.grid.item(2).setSelected(True)
-    dialog.extract_selected()
+    dialog.export_single("3")
     assert len(PdfReader(str(tmp_path / "picked.pdf")).pages) == 1
 
-    # With nothing selected, Split covers every page.
+    # With nothing selected, a per-page export covers every page.
     _FakeFileDialog.path = str(tmp_path / "split")
     dialog.grid.clearSelection()
-    dialog.split_pages()
+    dialog.export_per_page()
     assert len(list((tmp_path / "split").glob("*.pdf"))) == 3
 
     _FakeFileDialog.path = str(tmp_path / "final.pdf")
@@ -254,3 +266,125 @@ def test_main_window_menu_opens_the_page_organizer(qtbot):
     )
     assert organise.shortcut().toString() == "Ctrl+Shift+O"
     assert callable(window.open_page_organizer)
+
+
+# -- incremental thumbnails ----------------------------------------------------
+
+
+def test_organizer_rotating_one_page_only_re_renders_that_page(qtbot, make_pdf):
+    _needs_qtpdf()
+    dialog = _open(make_pdf(pages=3), qtbot)
+    qtbot.waitUntil(lambda: len(dialog._images) == 3, timeout=5000)
+
+    dialog.grid.item(0).setSelected(True)
+    dialog.rotate_selected(90)
+
+    # The untouched pages keep their cached thumbnails straight away...
+    assert dialog.grid.item(1).icon().isNull() is False
+    assert dialog.grid.item(2).icon().isNull() is False
+    assert len(dialog._images) == 2
+    # ...and only the rotated page is re-rendered.
+    assert dialog.grid.item(0).icon().isNull() is True
+    qtbot.waitUntil(lambda: not dialog.grid.item(0).icon().isNull(), timeout=5000)
+    assert len(dialog._images) == 3
+
+
+def test_organizer_metadata_keeps_every_thumbnail(qtbot, make_pdf, monkeypatch):
+    _needs_qtpdf()
+    dialog = _open(make_pdf(pages=2), qtbot)
+    qtbot.waitUntil(lambda: len(dialog._images) == 2, timeout=5000)
+
+    class _FakeMetadata:
+        def __init__(self, metadata, parent=None):
+            pass
+
+        def exec(self):
+            return 1
+
+        def values(self):
+            return {"Title": "Cached"}
+
+    monkeypatch.setattr(org, "MetadataDialog", _FakeMetadata)
+    dialog.edit_metadata()
+
+    # Metadata changes how the document reads, not how pages look.
+    assert dialog.document.get_metadata()["Title"] == "Cached"
+    assert len(dialog._images) == 2
+    assert all(not dialog.grid.item(row).icon().isNull() for row in range(2))
+
+
+def test_organizer_drag_commits_the_new_order(qtbot, make_pdf):
+    _needs_qtpdf()
+    dialog = _open(make_pdf(pages=3), qtbot)
+    qtbot.waitUntil(lambda: len(dialog._images) == 3, timeout=5000)
+
+    # Move page 1 to the end the way a drag does, then commit it.
+    assert dialog.grid.move_rows_to([0], 2) is True
+    dialog.commit_order()
+
+    assert _page_numbers(dialog.document.path) == [2, 3, 1]
+    # Reordering only moves pages, so nothing had to be rendered again.
+    assert len(dialog._images) == 3
+    assert all(not dialog.grid.item(row).icon().isNull() for row in range(3))
+    assert [dialog.grid.item(row).text() for row in range(3)] == ["Page 1", "Page 2", "Page 3"]
+
+
+def test_export_pages_asks_between_one_pdf_and_one_per_page(qtbot, make_pdf, tmp_path, monkeypatch):
+    _needs_qtpdf()
+    dialog = _open(make_pdf(pages=3), qtbot)
+    monkeypatch.setattr(org, "QFileDialog", _FakeFileDialog)
+    monkeypatch.setattr(org.ExportPagesDialog, "exec", lambda self: 1)
+
+    # "One PDF" mode asks for a filename.
+    monkeypatch.setattr(org.ExportPagesDialog, "single_pdf", lambda self: True)
+    _FakeFileDialog.path = str(tmp_path / "all.pdf")
+    dialog.export_pages()
+    assert len(PdfReader(str(tmp_path / "all.pdf")).pages) == 3
+
+    # "One per page" mode asks for a folder instead.
+    monkeypatch.setattr(org.ExportPagesDialog, "single_pdf", lambda self: False)
+    _FakeFileDialog.path = str(tmp_path / "each")
+    dialog.export_pages()
+    assert len(list((tmp_path / "each").glob("*.pdf"))) == 3
+
+
+def test_export_dialog_defaults_to_one_pdf(qtbot):
+    dialog = org.ExportPagesDialog("page(s) 1-3")
+    qtbot.addWidget(dialog)
+
+    assert dialog.single_pdf() is True
+    dialog.per_page_button.setChecked(True)
+    assert dialog.single_pdf() is False
+
+
+# -- thumbnails follow each page's own shape -----------------------------------
+
+
+def test_page_grid_thumbnail_keeps_the_page_aspect(qtbot):
+    grid = PageGridWidget(grid=True, multi_select=True)
+    qtbot.addWidget(grid)
+    item = QListWidgetItem("Page 1")
+    grid.addItem(item)
+
+    grid.set_thumbnail(item, QImage(QSize(108, 83), QImage.Format.Format_RGB32))
+    assert item.sizeHint().width() > item.sizeHint().height()
+
+    grid.set_thumbnail(item, QImage(QSize(108, 142), QImage.Format.Format_RGB32))
+    assert item.sizeHint().height() > item.sizeHint().width()
+
+
+def test_thumbnail_worker_fits_each_page_to_its_own_aspect():
+    class _Document:
+        def pagePointSize(self, index):
+            # Rotated pages are already landscape here: QPdfDocument.pagePointSize()
+            # takes the page's /Rotate into account.
+            return QSizeF(612, 792) if index == 0 else QSizeF(792, 612)
+
+    worker = _ThumbnailWorker("unused.pdf", QSize(100, 100))
+    portrait = worker._render_size(_Document(), 0)
+    landscape = worker._render_size(_Document(), 1)
+
+    assert portrait.height() > portrait.width()
+    assert landscape.width() > landscape.height()
+    assert max(portrait.width(), portrait.height()) <= 100
+    assert max(landscape.width(), landscape.height()) <= 100

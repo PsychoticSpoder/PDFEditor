@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QIcon, QImage, QPixmap
+from PySide6.QtCore import QObject, QSize, QSizeF, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .widgets import GRID_ICON_SIZE, PageGridWidget
+from .widgets import PageGridWidget
 
 try:  # pragma: no cover - depends on the PySide6 build
     from PySide6.QtPdf import QPdfDocument
@@ -98,21 +98,36 @@ def _scaled_pixmap(image: QImage, size: QSize) -> QPixmap:
 
 
 class _ThumbnailWorker(QObject):
-    """Loads a PDF and renders every page; lives entirely on a worker thread."""
+    """Loads a PDF and renders the requested pages; lives on a worker thread.
+
+    ``QPdfDocument.render()`` stretches a page into whatever size it is handed, so each
+    page is rendered at its *own* aspect ratio (from :meth:`QPdfDocument.pagePointSize`,
+    which already accounts for page rotation). That keeps landscape and rotated pages from
+    being squashed into a portrait thumbnail.
+    """
 
     loaded = Signal(int)
     rendered = Signal(int, QImage)
     failed = Signal(str)
     done = Signal()
 
-    def __init__(self, path: str, size: QSize) -> None:
+    def __init__(self, path: str, size: QSize, pages: list[int] | None = None) -> None:
         super().__init__()
         self._path = path
         self._size = size
+        self._pages = None if pages is None else list(pages)
         self._stop = threading.Event()
 
     def cancel(self) -> None:
         self._stop.set()
+
+    def _render_size(self, document, index: int) -> QSize:
+        """The largest image of the page's own shape that fits in the requested box."""
+        point_size = document.pagePointSize(index)
+        if point_size.isEmpty():
+            return self._size
+        fitted = QSizeF(point_size).scaled(QSizeF(self._size), Qt.AspectRatioMode.KeepAspectRatio)
+        return QSize(max(1, round(fitted.width())), max(1, round(fitted.height())))
 
     @Slot()
     def run(self) -> None:
@@ -134,26 +149,41 @@ class _ThumbnailWorker(QObject):
             self.done.emit()
             return
         self.loaded.emit(page_count)
-        for index in range(page_count):
+        targets = range(page_count) if self._pages is None else self._pages
+        for index in targets:
             if self._stop.is_set():
                 break
-            image = document.render(index, self._size)
+            if not 0 <= index < page_count:
+                continue
+            image = document.render(index, self._render_size(document, index))
             if not image.isNull():
                 self.rendered.emit(index, image)
         self.done.emit()
 
 
 class PdfThumbnailLoader(QObject):
-    """Owns the worker thread that renders page thumbnails off the GUI thread."""
+    """Owns the worker thread that renders page thumbnails off the GUI thread.
+
+    ``pages`` restricts rendering to those 0-based page indexes (all pages when omitted),
+    which lets a caller show a document it has already partly rendered and only refresh
+    the pages that actually changed. ``rendered`` reports the page index, not the position
+    within the request, so the caller can map images back to its own rows.
+    """
 
     loaded = Signal(int)
     rendered = Signal(int, QImage)
     failed = Signal(str)
 
-    def __init__(self, path: str, size: QSize, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        path: str,
+        size: QSize,
+        pages: list[int] | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._thread = QThread()
-        self._worker = _ThumbnailWorker(path, size)
+        self._worker = _ThumbnailWorker(path, size, pages)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.loaded.connect(self.loaded)
@@ -349,7 +379,7 @@ class PageReorderDialog(QDialog):
         if not _QT_PDF_AVAILABLE:
             self.progress.setText("Thumbnails unavailable; reordering needs QtPdf.")
         else:
-            self._loader = PdfThumbnailLoader(path, GRID_ICON_SIZE)
+            self._loader = PdfThumbnailLoader(path, self.list.thumbnail_box())
             self._loader.loaded.connect(self._on_loaded)
             self._loader.rendered.connect(self._on_rendered)
             self._loader.failed.connect(self._set_message)
@@ -379,7 +409,7 @@ class PageReorderDialog(QDialog):
     def _on_rendered(self, index: int, image: QImage) -> None:
         item = self.list.item(index)
         if item is not None:
-            item.setIcon(QIcon(_scaled_pixmap(image, GRID_ICON_SIZE)))
+            self.list.set_thumbnail(item, image)
         self._rendered += 1
         self.progress.setText(
             f"Rendering previews… {self._rendered}/{self._total}"

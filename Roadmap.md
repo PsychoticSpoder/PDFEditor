@@ -202,6 +202,14 @@ The project is now an installable `pdfeditor` package:
   - [x] File → **Organize Pages…** (`Ctrl+Shift+O`) entry point in `MainWindow`.
   - [x] Tests: `tests/test_organizer.py` (working-copy session) and
         `tests/test_gui_organizer.py` (grid + dialog actions).
+  - [x] Incremental thumbnails: pages are cached by appearance, so an edit re-renders only
+        the pages it changed and a drag reorder re-renders nothing at all.
+  - [x] Aspect-correct previews: each page renders at its own ratio (and its cell resizes to
+        match), so rotated/landscape pages are no longer squashed into a portrait cell.
+  - [x] A drag now commits the new order to the working copy, so Save As writes the order
+        that is on screen.
+  - [x] Extract and Split merged into one **Export Pages…** action: one PDF, or one PDF per
+        page.
 
 ### 10.4 Key artifacts
 

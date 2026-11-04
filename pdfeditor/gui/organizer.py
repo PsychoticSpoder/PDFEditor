@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QIcon, QImage
+from PySide6.QtGui import QAction, QImage
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -44,10 +45,10 @@ from ..core.organizer import PageOrganizerDocument
 from .preview import (
     PdfThumbnailLoader,
     _format_page_selection,
-    _scaled_pixmap,
+    _parse_spec_to_pages,
     qtpdf_available,
 )
-from .widgets import GRID_ICON_SIZE, PageGridWidget
+from .widgets import PageGridWidget
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,36 @@ class WatermarkDialog(QDialog):
         return self.selected_only.isChecked() and self.selected_only.isEnabled()
 
 
+class ExportPagesDialog(QDialog):
+    """Ask whether the exported pages go into one PDF or one PDF per page."""
+
+    def __init__(self, scope_label: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Export pages")
+        self.setMinimumWidth(380)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Export {scope_label} as:"))
+
+        self.single_button = QRadioButton("One PDF containing every selected page")
+        self.single_button.setChecked(True)
+        self.per_page_button = QRadioButton("A separate PDF for each page")
+        layout.addWidget(self.single_button)
+        layout.addWidget(self.per_page_button)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Export")
+        layout.addWidget(buttons)
+
+    def single_pdf(self) -> bool:
+        """True for one combined PDF, False for one file per page."""
+        return self.single_button.isChecked()
+
+
 class PageOrganizerDialog(QDialog):
     """A thumbnail grid of every page with all the page operations in one place.
 
@@ -154,7 +185,7 @@ class PageOrganizerDialog(QDialog):
         (),
         ("rotate_left", "rotate_right", "rotate_180"),
         (),
-        ("delete", "extract", "insert", "split"),
+        ("delete", "export", "insert"),
         (),
         ("watermark", "metadata"),
         (),
@@ -171,6 +202,11 @@ class PageOrganizerDialog(QDialog):
         self._total = 0
         self._rendered = 0
         self._cleaned = False
+        # Thumbnail cache: one identity per page appearance, so an edit only re-renders the
+        # pages that actually changed (and a drag reorder re-renders nothing at all).
+        self._keys: list[int] = []
+        self._images: dict[int, QImage] = {}
+        self._next_key = 0
         self._actions = self._build_actions()
 
         layout = QVBoxLayout(self)
@@ -186,6 +222,7 @@ class PageOrganizerDialog(QDialog):
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._show_context_menu)
         self.grid.itemSelectionChanged.connect(self._update_status)
+        self.grid.rows_moved.connect(self.commit_order)
         layout.addWidget(self.grid)
         layout.addLayout(self._build_toolbar())
 
@@ -245,14 +282,13 @@ class PageOrganizerDialog(QDialog):
             tip="Remove the selected pages from the document",
         )
         add(
-            "extract",
-            "Extract Selected to PDF…",
-            self.extract_selected,
+            "export",
+            "Export Pages…",
+            self.export_pages,
             "Ctrl+E",
-            needs_selection=True,
+            tip="Save the selected pages (or every page) as one PDF or one PDF per page",
         )
         add("insert", "Insert Pages…", self.insert_pages, "Ctrl+I")
-        add("split", "Split Pages…", self.split_pages)
         add("watermark", "Watermark…", self.apply_watermark, "Ctrl+Shift+W")
         add("metadata", "Metadata…", self.edit_metadata, "Ctrl+M")
         add("select_all", "Select All Pages", self.select_all, "Ctrl+A")
@@ -262,7 +298,7 @@ class PageOrganizerDialog(QDialog):
 
     def _build_toolbar(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        for key in ("rotate_left", "rotate_right", "delete", "extract", "metadata"):
+        for key in ("rotate_left", "rotate_right", "delete", "export", "metadata"):
             row.addWidget(self._tool_button(key))
         self.more_button = QToolButton()
         self.more_button.setText("More actions")
@@ -296,56 +332,76 @@ class PageOrganizerDialog(QDialog):
 
     # -- thumbnails ------------------------------------------------------------
     def reload(self) -> None:
-        """Rebuild the grid from the current working copy."""
+        """Rebuild the grid from scratch (first load, and after Revert)."""
         self._stop_loader()
-        self._total = 0
-        self._rendered = 0
-        # Populate straight away so the grid is usable while the icons stream in.
         try:
-            self._populate(self.document.page_count())
+            count = self.document.page_count()
         except Exception:  # noqa: BLE001 - the renderer reports the count as a fallback
             logger.exception("Could not count the pages of the working copy")
+            count = 0
+        self._images.clear()
+        self._keys = [self._new_key() for _ in range(count)]
+        self._redraw()
+
+    def _new_key(self) -> int:
+        """A fresh identity for a page's current appearance; also its cache key."""
+        self._next_key += 1
+        return self._next_key
+
+    def _redraw(self) -> None:
+        """Rebuild the grid for :attr:`_keys`, reusing every cached thumbnail.
+
+        Only pages without a cached image are handed to the renderer, so rotating or
+        deleting a single page no longer redraws the whole document.
+        """
+        self._stop_loader()
+        self.grid.blockSignals(True)
+        self.grid.clear()
+        pending: list[int] = []
+        for row, key in enumerate(self._keys):
+            item = QListWidgetItem(f"Page {row + 1}")
+            item.setData(Qt.ItemDataRole.UserRole, row + 1)
+            item.setSizeHint(self.grid.item_size())
+            self.grid.addItem(item)
+            image = self._images.get(key)
+            if image is None:
+                pending.append(row)
+            else:
+                self.grid.set_thumbnail(item, image)
+        self.grid.blockSignals(False)
+        self._total = len(self._keys)
+        self._rendered = self._total - len(pending)
+        self._update_status()
+        if pending:
+            self._render_rows(pending)
+
+    def _render_rows(self, rows: list[int]) -> None:
+        """Ask the worker thread for the thumbnails of ``rows`` only."""
         if not qtpdf_available():
             self._set_message("Thumbnails unavailable (QtPdf missing); page actions still work.")
-            self._update_status()
             return
-        self._loader = PdfThumbnailLoader(str(self.document.path), GRID_ICON_SIZE)
-        self._loader.loaded.connect(self._on_loaded)
+        self._loader = PdfThumbnailLoader(
+            str(self.document.path), self.grid.thumbnail_box(), pages=rows
+        )
         self._loader.rendered.connect(self._on_rendered)
         self._loader.failed.connect(self._set_message)
         self._loader.start()
-        self._update_status()
 
     def _stop_loader(self) -> None:
         if self._loader is not None:
             self._loader.stop()
             self._loader = None
 
-    def _populate(self, page_count: int) -> None:
-        """(Re)create one grid cell per page."""
-        self.grid.clear()
-        for index in range(page_count):
-            item = QListWidgetItem(f"Page {index + 1}")
-            item.setData(Qt.ItemDataRole.UserRole, index + 1)
-            # Pin the cell size so hit-testing and drag targets stay correct.
-            item.setSizeHint(self.grid.item_size())
-            self.grid.addItem(item)
-        self._total = page_count
-        self._rendered = 0
-        self._update_status()
-
-    @Slot(int)
-    def _on_loaded(self, page_count: int) -> None:
-        if self.grid.count() != page_count:
-            self._populate(page_count)
-
     @Slot(int, QImage)
-    def _on_rendered(self, index: int, image: QImage) -> None:
-        item = self.grid.item(index)
-        if item is not None:
-            item.setIcon(QIcon(_scaled_pixmap(image, GRID_ICON_SIZE)))
+    def _on_rendered(self, page_index: int, image: QImage) -> None:
+        # The working copy always ends up in grid order, so a page index is also a row.
+        if 0 <= page_index < len(self._keys):
+            self._images[self._keys[page_index]] = image
+            item = self.grid.item(page_index)
+            if item is not None:
+                self.grid.set_thumbnail(item, image)
         self._rendered += 1
-        if self._rendered >= self._total and self.grid.count():
+        if self._rendered >= self._total:
             self._update_status()
 
     @Slot(str)
@@ -394,11 +450,68 @@ class PageOrganizerDialog(QDialog):
     def rotate_selected(self, angle: int) -> None:
         """Rotate the selection, or every page when nothing is selected."""
         pages = self.selected_spec() or None
+        keys, stale = self._keys_with_fresh(self._rows_for(pages))
         target = f"page(s) {pages}" if pages else "every page"
         self._mutate(
             lambda doc: doc.rotate(pages, angle),
             f"Rotated {target} by {angle}°.",
+            keys=keys,
+            stale=stale,
         )
+
+    def _keys_with_fresh(self, rows: list[int]) -> tuple[list[int], list[int]]:
+        """New identities for the pages at ``rows``, plus their old thumbnails to drop."""
+        keys = list(self._keys)
+        stale: list[int] = []
+        for row in rows:
+            if 0 <= row < len(keys):
+                stale.append(keys[row])
+                keys[row] = self._new_key()
+        return keys, stale
+
+    def _rows_for(self, pages: str | None) -> list[int]:
+        """The grid rows covered by a 1-based page spec (every row when ``None``)."""
+        if pages is None:
+            return list(range(len(self._keys)))
+        return [
+            number - 1
+            for number in sorted(_parse_spec_to_pages(pages))
+            if 1 <= number <= len(self._keys)
+        ]
+
+    def _all_pages_spec(self) -> str:
+        """``"1-4"`` style spec covering every page currently in the grid."""
+        return _format_page_selection(list(range(1, self.grid.count() + 1)))
+
+    @Slot()
+    def commit_order(self) -> None:
+        """Persist the grid's order to the working copy (called when a drag ends).
+
+        Reordering only moves pages, so every cached thumbnail stays valid and nothing
+        has to be rendered again.
+        """
+        order = [
+            int(self.grid.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.grid.count())
+        ]
+        if not order or order == list(range(1, len(order) + 1)):
+            return
+        spec = ",".join(str(page) for page in order)
+        self._stop_loader()
+        try:
+            self.document.reorder(spec)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Could not reorder the working copy")
+            self.status.setText(f"Error: {exc}")
+            self.reload()
+            return
+        self._keys = [self._keys[index - 1] for index in order]
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            item.setText(f"Page {row + 1}")
+            item.setData(Qt.ItemDataRole.UserRole, row + 1)
+        self._update_status()
+        self.status.setText(f"Reordered to {spec}.")
 
     def delete_selected(self) -> None:
         """Delete the selected pages from the working copy."""
@@ -411,24 +524,51 @@ class PageOrganizerDialog(QDialog):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-        self._mutate(lambda doc: doc.delete(spec), f"Deleted page(s) {spec}.")
+        doomed = self._rows_for(spec)
+        self._mutate(
+            lambda doc: doc.delete(spec),
+            f"Deleted page(s) {spec}.",
+            keys=[key for row, key in enumerate(self._keys) if row not in set(doomed)],
+            stale=[self._keys[row] for row in doomed],
+        )
 
-    def extract_selected(self) -> None:
-        """Write the selected pages to a separate PDF."""
-        spec = self._require_selection()
-        if spec is None:
+    def export_pages(self) -> None:
+        """Export the selection as one PDF, or as one PDF per page."""
+        spec = self.selected_spec() or None
+        scope = f"page(s) {spec}" if spec else "every page"
+        dialog = ExportPagesDialog(scope, self)
+        if not dialog.exec():
             return
+        if dialog.single_pdf():
+            self.export_single(spec)
+        else:
+            self.export_per_page(spec)
+
+    def export_single(self, spec: str | None = None) -> None:
+        """Write the given pages (or every page) into one PDF."""
+        pages = spec or self._all_pages_spec()
         output, _ = QFileDialog.getSaveFileName(
             self,
-            "Extract selected pages",
+            "Export pages to one PDF",
             self.document.suggest_output_name("_selected"),
             "PDF Files (*.pdf)",
         )
         if not output:
             return
         self._export(
-            lambda: self.document.extract(spec, output),
-            f"Extracted page(s) {spec} to {output}.",
+            lambda: self.document.extract(pages, output),
+            f"Exported page(s) {pages} to {output}.",
+        )
+
+    def export_per_page(self, spec: str | None = None) -> None:
+        """Write one PDF per page into a folder."""
+        output_dir = QFileDialog.getExistingDirectory(self, "Choose a folder for the page PDFs")
+        if not output_dir:
+            return
+        written: list[Path] = []
+        self._export(
+            lambda: written.extend(self.document.split(output_dir, spec, None)),
+            lambda: f"Wrote {len(written)} page file(s) to {output_dir}.",
         )
 
     def insert_pages(self) -> None:
@@ -450,21 +590,19 @@ class PageOrganizerDialog(QDialog):
         )
         if not accepted:
             return
+        before = len(self._keys)
+        split_at = min(max(position - 1, 0), before)
+
+        def new_keys() -> list[int]:
+            """Only the inserted pages are new; the rest keep their thumbnails."""
+            inserted = max(self.document.page_count() - before, 0)
+            fresh = [self._new_key() for _ in range(inserted)]
+            return self._keys[:split_at] + fresh + self._keys[split_at:]
+
         self._mutate(
             lambda doc: doc.insert(source, position),
             f"Inserted {Path(source).name} before page {position}.",
-        )
-
-    def split_pages(self) -> None:
-        """Write one PDF per page (or per selected page) into a folder."""
-        spec = self.selected_spec() or None
-        output_dir = QFileDialog.getExistingDirectory(self, "Choose a folder for the split pages")
-        if not output_dir:
-            return
-        written: list[Path] = []
-        self._export(
-            lambda: written.extend(self.document.split(output_dir, spec, None)),
-            lambda: f"Wrote {len(written)} split file(s) to {output_dir}.",
+            keys=new_keys,
         )
 
     def apply_watermark(self) -> None:
@@ -475,10 +613,13 @@ class PageOrganizerDialog(QDialog):
             return
         text, opacity, font_size = dialog.values()
         pages = spec if dialog.only_selected() else None
+        keys, stale = self._keys_with_fresh(self._rows_for(pages))
         target = f"page(s) {pages}" if pages else "every page"
         self._mutate(
             lambda doc: doc.watermark(pages, text, opacity, font_size),
             f"Watermarked {target} with '{text}'.",
+            keys=keys,
+            stale=stale,
         )
 
     def edit_metadata(self) -> None:
@@ -487,10 +628,16 @@ class PageOrganizerDialog(QDialog):
         if not dialog.exec():
             return
         values = dialog.values()
-        self._mutate(lambda doc: doc.set_metadata(values), "Metadata updated.")
+        # Metadata does not change how any page looks, so keep every thumbnail.
+        self._mutate(
+            lambda doc: doc.set_metadata(values),
+            "Metadata updated.",
+            keys=list(self._keys),
+        )
 
     def revert(self) -> None:
         """Throw away every edit and return to the original document."""
+        self._stop_loader()
         self.document.revert()
         self.reload()
         self.status.setText("Reverted to the original document.")
@@ -520,15 +667,28 @@ class PageOrganizerDialog(QDialog):
         return str(path) if path else None
 
     # -- helpers ---------------------------------------------------------------
-    def _mutate(self, operation, describe) -> None:
-        """Apply a change to the working copy, then rebuild the grid."""
+    def _mutate(self, operation, describe, keys=None, stale=()) -> None:
+        """Apply a change to the working copy, then redraw only what changed.
+
+        ``keys`` may be the new list of page identities (one per row), or a callable
+        returning it when the effect on the page list is only known afterwards (Insert).
+        ``stale`` are the identities whose thumbnails must be dropped, i.e. the pages
+        whose appearance changed. Both default to a full rebuild.
+        """
+        self._stop_loader()
         try:
             operation(self.document)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Page organizer action failed")
             self.status.setText(f"Error: {exc}")
             return
-        self.reload()
+        for key in stale:
+            self._images.pop(key, None)
+        if keys is None:
+            self.reload()
+        else:
+            self._keys = list(keys() if callable(keys) else keys)
+            self._redraw()
         self.status.setText(describe() if callable(describe) else describe)
 
     def _export(self, operation, describe) -> None:

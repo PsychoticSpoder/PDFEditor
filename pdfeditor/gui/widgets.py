@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -17,7 +17,10 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListView,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +38,86 @@ GRID_CELL_SIZE = QSize(120, 176)
 LIST_ICON_SIZE = QSize(64, 84)
 LIST_ROW_HEIGHT = 92
 
+#: Item-data role holding the QPixmap that :class:`_ThumbnailDelegate` paints.
+THUMBNAIL_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+_CAPTION_HEIGHT = 18
+_CELL_PADDING = 6
+_GRID_THUMB_BOX = QSize(108, 142)
+
+
+class _ThumbnailDelegate(QStyledItemDelegate):
+    """Paints a page thumbnail at its own aspect ratio inside its grid cell.
+
+    ``QListWidget``'s stock delegate draws every icon inside one global icon box, which
+    squeezes a landscape page into a portrait box. Here each cell is sized from the page
+    itself and the pixmap is centred in whatever room the cell provides, so a rotated or
+    landscape page gets a landscape thumbnail.
+    """
+
+    def __init__(self, parent: QWidget | None = None, caption_below: bool = True) -> None:
+        super().__init__(parent)
+        self._caption_below = caption_below
+
+    def set_caption_below(self, caption_below: bool) -> None:
+        """Grid cells caption under the thumbnail; list rows caption beside it."""
+        self._caption_below = caption_below
+
+    @staticmethod
+    def _fit(pixmap: QPixmap, box: QSize) -> QPixmap:
+        """Down-scale ``pixmap`` to ``box`` if needed (never up-scales, so it stays crisp)."""
+        if pixmap.width() <= box.width() and pixmap.height() <= box.height():
+            return pixmap
+        return pixmap.scaled(
+            box.width(),
+            box.height(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def paint(self, painter, option, index) -> None:
+        widget = option.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, option, painter, widget)
+
+        rect = option.rect
+        caption = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        pixmap = index.data(THUMBNAIL_ROLE)
+        if not isinstance(pixmap, QPixmap) or pixmap.isNull():
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, caption)
+            return
+
+        if self._caption_below:
+            box = QSize(rect.width(), max(1, rect.height() - _CAPTION_HEIGHT))
+            scaled = self._fit(pixmap, box)
+            painter.drawPixmap(
+                rect.left() + (box.width() - scaled.width()) // 2,
+                rect.top() + (box.height() - scaled.height()) // 2,
+                scaled,
+            )
+            caption_rect = QRect(
+                rect.left(), rect.bottom() - _CAPTION_HEIGHT + 1, rect.width(), _CAPTION_HEIGHT
+            )
+            painter.drawText(
+                caption_rect,
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                caption,
+            )
+            return
+
+        scaled = self._fit(
+            pixmap, QSize(rect.width() - 2 * _CELL_PADDING, rect.height() - 2 * _CELL_PADDING)
+        )
+        painter.drawPixmap(
+            rect.left() + _CELL_PADDING,
+            rect.top() + (rect.height() - scaled.height()) // 2,
+            scaled,
+        )
+        text_left = rect.left() + 2 * _CELL_PADDING + scaled.width()
+        painter.drawText(
+            QRect(text_left, rect.top(), max(0, rect.right() - text_left), rect.height()),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            caption,
+        )
 
 
 class DropLineEdit(QLineEdit):
@@ -492,14 +575,19 @@ class PageGridWidget(QListWidget):
     else together.
     """
 
+    rows_moved = Signal()
+
     def __init__(self, grid: bool = True, multi_select: bool = False) -> None:
         super().__init__()
         self._grid = grid
         self._multi_select = multi_select
         self._item_size = QSize(0, LIST_ROW_HEIGHT)
         self._drag_rows: list[int] = []
+        self._drag_moved = False
         self._press_pos = None
-        self.setUniformItemSizes(True)
+        # Cells follow each page's own aspect ratio, so they are not uniform.
+        self.setUniformItemSizes(False)
+        self.setItemDelegate(_ThumbnailDelegate(self, caption_below=grid))
         self.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
             if multi_select
@@ -525,8 +613,11 @@ class PageGridWidget(QListWidget):
             self.setIconSize(LIST_ICON_SIZE)
             self._item_size = QSize(0, LIST_ROW_HEIGHT)
         self.setMovement(QListView.Movement.Static)
+        delegate = self.itemDelegate()
+        if isinstance(delegate, _ThumbnailDelegate):
+            delegate.set_caption_below(self._grid)
         for row in range(self.count()):
-            self.item(row).setSizeHint(self._item_size)
+            self._resize_item(self.item(row))
 
     def is_grid(self) -> bool:
         return self._grid
@@ -540,6 +631,39 @@ class PageGridWidget(QListWidget):
     def item_size(self) -> QSize:
         """The size hint every item should use in the current mode."""
         return QSize(self._item_size)
+
+    def thumbnail_box(self) -> QSize:
+        """The largest thumbnail that fits one cell in the current mode."""
+        return QSize(_GRID_THUMB_BOX if self._grid else LIST_ICON_SIZE)
+
+    def set_thumbnail(self, item: QListWidgetItem, image: QImage) -> None:
+        """Show ``image`` on ``item`` and shape its cell like the page itself.
+
+        The cell is sized from the thumbnail, so a landscape (or rotated) page gets a
+        landscape cell instead of a portrait one with squashed content.
+        """
+        if image.isNull():
+            return
+        pixmap = QPixmap.fromImage(image)
+        item.setData(THUMBNAIL_ROLE, pixmap)
+        # The stock icon is set too, so callers can still query item.icon().
+        item.setIcon(QIcon(pixmap))
+        item.setSizeHint(self._cell_size_for(pixmap.size()))
+
+    def _cell_size_for(self, thumbnail: QSize) -> QSize:
+        height = thumbnail.height() + _CAPTION_HEIGHT + 2 * _CELL_PADDING
+        if self._grid:
+            return QSize(thumbnail.width() + 2 * _CELL_PADDING, height)
+        # A zero width keeps list rows stretched across the viewport.
+        return QSize(0, max(LIST_ROW_HEIGHT, height))
+
+    def _resize_item(self, item: QListWidgetItem) -> None:
+        """(Re)apply an item's cell size, e.g. after switching grid/list mode."""
+        pixmap = item.data(THUMBNAIL_ROLE)
+        if isinstance(pixmap, QPixmap) and not pixmap.isNull():
+            item.setSizeHint(self._cell_size_for(pixmap.size()))
+        else:
+            item.setSizeHint(self._item_size)
 
     # -- ordering -------------------------------------------------------------
     def selected_rows(self) -> list[int]:
@@ -625,9 +749,15 @@ class PageGridWidget(QListWidget):
         if target is not None and target not in self._drag_rows:
             if self.move_rows_to(self._drag_rows, target):
                 self._drag_rows = self.selected_rows()
+                self._drag_moved = True
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
+        moved = self._drag_moved
+        self._drag_moved = False
         self._drag_rows = []
         self._press_pos = None
         super().mouseReleaseEvent(event)
+        if moved:
+            # Emitted once per finished drag, not on every mouse move along the way.
+            self.rows_moved.emit()

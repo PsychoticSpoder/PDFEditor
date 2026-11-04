@@ -1,3 +1,5 @@
+"""Main application window for the PySide6 GUI."""
+
 from __future__ import annotations
 
 import logging
@@ -5,17 +7,14 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -30,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .core import (
+from ..core import (
     DEFAULT_EXCEL_PAPER_SIZE,
     DEFAULT_GLOB_PATTERN,
     DEFAULT_WATERMARK_FONT_SIZE,
@@ -41,19 +40,6 @@ from .core import (
     MIN_WORKERS,
     OFFICE_ACTIONS,
     OUTPUT_DIR_ACTIONS,
-    _validate_existing_dir,
-    _validate_existing_file,
-    _validate_output_dir,
-    _validate_output_path,
-    batch_delete_pages_pdfs,
-    batch_excel_to_pdf,
-    batch_pdf_to_text,
-    batch_print_pdfs,
-    batch_reorder_pdfs,
-    batch_rotate_pdfs,
-    batch_split_pdfs,
-    batch_watermark_pdfs,
-    batch_word_to_pdf,
     combine_pdfs,
     delete_page_range,
     images_to_pdf,
@@ -64,406 +50,20 @@ from .core import (
     split_pdf,
     watermark_pdf,
 )
+from .widgets import (
+    _directory_row,
+    _existing_dir_from_input,
+    _existing_file_from_input,
+    _file_row,
+    _output_dir_from_input,
+    _output_file_from_input,
+    _paths_from_input,
+    _save_row,
+)
+from .workers import BatchWorker, SingleOpWorker
 
 logger = logging.getLogger(__name__)
 
-
-class DropLineEdit(QLineEdit):
-    def __init__(self, allow_multiple: bool = False, directory_only: bool = False) -> None:
-        super().__init__()
-        self._allow_multiple = allow_multiple
-        self._directory_only = directory_only
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        mime_data = event.mimeData()
-        if mime_data.hasUrls() or mime_data.hasText():
-            event.acceptProposedAction()
-            return
-        super().dragEnterEvent(event)
-
-    def dropEvent(self, event: QDropEvent) -> None:
-        mime_data = event.mimeData()
-        if mime_data.hasUrls():
-            paths = [Path(url.toLocalFile()).expanduser().resolve() for url in mime_data.urls() if url.isLocalFile()]
-            if not paths:
-                return
-
-            if self._directory_only:
-                directory_paths = [path for path in paths if path.is_dir()]
-                if directory_paths:
-                    self.setText(str(directory_paths[0]))
-                else:
-                    self.setText(str(paths[0].parent))
-            elif self._allow_multiple:
-                self.setText(";".join(str(path) for path in paths))
-            else:
-                self.setText(str(paths[0]))
-
-            event.acceptProposedAction()
-            return
-
-        if mime_data.hasText():
-            self.setText(mime_data.text().strip())
-            event.acceptProposedAction()
-            return
-
-        super().dropEvent(event)
-
-
-def _file_row(
-    label: str,
-    button_text: str,
-    pick_many: bool = False,
-    filter_text: str = "All Files (*.*)",
-) -> tuple[QHBoxLayout, QLineEdit, QPushButton]:
-    layout = QHBoxLayout()
-    line_edit = DropLineEdit(allow_multiple=pick_many)
-    line_edit.setToolTip("Drag and drop files here.")
-    button = QPushButton(button_text)
-    layout.addWidget(QLabel(label))
-    layout.addWidget(line_edit, stretch=1)
-    layout.addWidget(button)
-
-    def choose_files() -> None:
-        if pick_many:
-            files, _ = QFileDialog.getOpenFileNames(None, f"Select {label}", "", filter_text)
-            if files:
-                line_edit.setText(";".join(files))
-        else:
-            file_name, _ = QFileDialog.getOpenFileName(None, f"Select {label}", "", filter_text)
-            if file_name:
-                line_edit.setText(file_name)
-
-    button.clicked.connect(choose_files)
-    return layout, line_edit, button
-
-
-def _save_row(
-    label: str,
-    button_text: str,
-    filter_text: str = "All Files (*.*)",
-) -> tuple[QHBoxLayout, QLineEdit, QPushButton]:
-    layout = QHBoxLayout()
-    line_edit = DropLineEdit()
-    line_edit.setToolTip("Type a path or drag a file path here.")
-    button = QPushButton(button_text)
-    layout.addWidget(QLabel(label))
-    layout.addWidget(line_edit, stretch=1)
-    layout.addWidget(button)
-
-    def choose_file() -> None:
-        file_name, _ = QFileDialog.getSaveFileName(None, f"Save {label}", "", filter_text)
-        if file_name:
-            line_edit.setText(file_name)
-
-    button.clicked.connect(choose_file)
-    return layout, line_edit, button
-
-
-def _directory_row(label: str, button_text: str) -> tuple[QHBoxLayout, QLineEdit, QPushButton]:
-    layout = QHBoxLayout()
-    line_edit = DropLineEdit(directory_only=True)
-    line_edit.setToolTip("Drag and drop a folder here.")
-    button = QPushButton(button_text)
-    layout.addWidget(QLabel(label))
-    layout.addWidget(line_edit, stretch=1)
-    layout.addWidget(button)
-
-    def choose_directory() -> None:
-        directory = QFileDialog.getExistingDirectory(None, f"Select {label}")
-        if directory:
-            line_edit.setText(directory)
-
-    button.clicked.connect(choose_directory)
-    return layout, line_edit, button
-
-
-def _paths_from_input(raw_text: str) -> list[Path]:
-    normalized = raw_text.replace("\n", ";")
-    return [Path(part.strip()).expanduser().resolve() for part in normalized.split(";") if part.strip()]
-
-
-def _existing_file_from_input(raw_text: str, label: str) -> Path:
-    text = raw_text.strip()
-    if not text:
-        raise ValueError(f"{label} is required.")
-    try:
-        return _validate_existing_file(text)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"{label} not found: {Path(text).expanduser().resolve()}") from exc
-
-
-def _output_file_from_input(raw_text: str, label: str) -> Path:
-    text = raw_text.strip()
-    if not text:
-        raise ValueError(f"{label} is required.")
-    return _validate_output_path(text)
-
-
-def _output_dir_from_input(raw_text: str, label: str) -> Path:
-    text = raw_text.strip()
-    if not text:
-        raise ValueError(f"{label} is required.")
-    return _validate_output_dir(text)
-
-
-def _existing_dir_from_input(raw_text: str, label: str) -> Path:
-    text = raw_text.strip()
-    if not text:
-        raise ValueError(f"{label} is required.")
-    try:
-        return _validate_existing_dir(text)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"{label} not found: {Path(text).expanduser().resolve()}") from exc
-
-
-class BatchWorker(QObject):
-    progress = Signal(int, int, str)
-    log = Signal(str)
-    finished = Signal(str)
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        action: str,
-        input_dir: Path,
-        output_dir: Path | None,
-        pattern: str,
-        workers: int,
-        angle: int,
-        pages: str | None,
-        order: str | None,
-        text: str | None,
-        opacity: float,
-        font_size: int,
-        prefix: str | None,
-        continue_on_error: bool,
-        paper_size: str | None = None,
-    ) -> None:
-        super().__init__()
-        self.action = action
-        self.input_dir = input_dir
-        self.output_dir = output_dir
-        self.pattern = pattern
-        self.workers = workers
-        self.angle = angle
-        self.pages = pages
-        self.order = order
-        self.text = text
-        self.opacity = opacity
-        self.font_size = font_size
-        self.prefix = prefix
-        self.continue_on_error = continue_on_error
-        self.paper_size = paper_size
-
-    def _matching_count(self) -> int:
-        files = [path for path in self.input_dir.glob(self.pattern) if path.is_file()]
-        if self.action in {"word-to-pdf", "excel-to-pdf"}:
-            files = [
-                path
-                for path in files
-                if not path.name.startswith("~$") and path.suffix.lower() not in {".tmp", ".wbk"}
-            ]
-        return len(files)
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            total = self._matching_count()
-            self.progress.emit(0, total, f"Starting {self.action}...")
-
-            if self.action == "rotate":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-                written_files = batch_rotate_pdfs(
-                    self.input_dir,
-                    self.output_dir,
-                    self.angle,
-                    self.pages,
-                    self.pattern,
-                    self.workers,
-                )
-                self.progress.emit(len(written_files), total, "Batch rotate complete")
-                self.finished.emit(f"Batch rotate complete. Created {len(written_files)} files.")
-
-            elif self.action == "watermark":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-                if not self.text:
-                    raise ValueError("Watermark text is required.")
-                if self.opacity < 0.0 or self.opacity > 1.0:
-                    raise ValueError("Opacity must be between 0.0 and 1.0.")
-
-                written_files = batch_watermark_pdfs(
-                    self.input_dir,
-                    self.output_dir,
-                    self.text,
-                    self.opacity,
-                    self.font_size,
-                    self.pattern,
-                    self.workers,
-                )
-                self.progress.emit(len(written_files), total, "Batch watermark complete")
-                self.finished.emit(f"Batch watermark complete. Created {len(written_files)} files.")
-
-            elif self.action == "delete-pages":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-                if not self.pages:
-                    raise ValueError("Pages are required for batch delete-pages.")
-                written_files = batch_delete_pages_pdfs(
-                    self.input_dir,
-                    self.output_dir,
-                    self.pages,
-                    self.pattern,
-                    self.workers,
-                )
-                self.progress.emit(len(written_files), total, "Batch delete-pages complete")
-                self.finished.emit(f"Batch delete-pages complete. Created {len(written_files)} files.")
-
-            elif self.action == "reorder":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-                if not self.order:
-                    raise ValueError("Order is required for batch reorder.")
-                written_files = batch_reorder_pdfs(
-                    self.input_dir,
-                    self.output_dir,
-                    self.order,
-                    self.pattern,
-                    self.workers,
-                )
-                self.progress.emit(len(written_files), total, "Batch reorder complete")
-                self.finished.emit(f"Batch reorder complete. Created {len(written_files)} files.")
-
-            elif self.action == "split":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-                created_count = batch_split_pdfs(
-                    self.input_dir,
-                    self.output_dir,
-                    self.pages,
-                    self.prefix,
-                    self.pattern,
-                    self.workers,
-                )
-                self.progress.emit(total, total, "Batch split complete")
-                self.finished.emit(f"Batch split complete. Created {created_count} files.")
-
-            elif self.action == "pdf-to-text":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-                written_files = batch_pdf_to_text(
-                    self.input_dir,
-                    self.output_dir,
-                    self.pattern,
-                    self.workers,
-                )
-                self.progress.emit(len(written_files), total, "Batch PDF to text complete")
-                self.finished.emit(f"Batch PDF to text complete. Created {len(written_files)} files.")
-
-            elif self.action == "word-to-pdf":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-
-                errors: list[str] = []
-
-                def on_progress(index: int, count: int, input_file: Path, state: str) -> None:
-                    self.progress.emit(index, count, f"Word {index}/{count}: {input_file.name}")
-                    if state == "start":
-                        self.log.emit(f"[START] {input_file.name}")
-                    elif state == "ok":
-                        self.log.emit(f"[OK] {input_file.name}")
-                    else:
-                        self.log.emit(f"[ERROR] {input_file.name} - {state}")
-
-                written_files = batch_word_to_pdf(
-                    self.input_dir,
-                    self.output_dir,
-                    self.pattern,
-                    1,
-                    on_progress,
-                    self.continue_on_error,
-                    errors,
-                )
-
-                if errors:
-                    self.log.emit("----- Errors -----")
-                    for message in errors:
-                        self.log.emit(message)
-
-                self.finished.emit(
-                    f"Batch Word to PDF complete. Created {len(written_files)} files. Errors: {len(errors)}"
-                )
-
-            elif self.action == "excel-to-pdf":
-                if self.output_dir is None:
-                    raise ValueError("Output folder is required.")
-
-                errors: list[str] = []
-                paper_size = self.paper_size or DEFAULT_EXCEL_PAPER_SIZE
-
-                def on_progress(index: int, count: int, input_file: Path, state: str) -> None:
-                    self.progress.emit(index, count, f"Excel {index}/{count}: {input_file.name}")
-                    if state == "start":
-                        self.log.emit(f"[START] {input_file.name}")
-                    elif state == "ok":
-                        self.log.emit(f"[OK] {input_file.name}")
-                    else:
-                        self.log.emit(f"[ERROR] {input_file.name} - {state}")
-
-                written_files = batch_excel_to_pdf(
-                    self.input_dir,
-                    self.output_dir,
-                    self.pattern,
-                    1,
-                    on_progress,
-                    self.continue_on_error,
-                    errors,
-                    paper_size,
-                )
-
-                if errors:
-                    self.log.emit("----- Errors -----")
-                    for message in errors:
-                        self.log.emit(message)
-
-                self.finished.emit(
-                    f"Batch Excel to PDF complete. Created {len(written_files)} files. Errors: {len(errors)}"
-                )
-
-            elif self.action == "print":
-                printed_count = batch_print_pdfs(self.input_dir, self.pattern, self.workers)
-                self.progress.emit(total, total, "Batch print complete")
-                self.finished.emit(f"Batch print submitted for {printed_count} files.")
-
-            else:
-                raise ValueError(f"Unsupported batch action: {self.action}")
-
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-
-
-class SingleOpWorker(QObject):
-    """Run a single (non-batch) operation on a background thread."""
-
-    finished = Signal(str)
-    failed = Signal(str)
-
-    def __init__(self, operation: Callable[[], str | None], success_message: str) -> None:
-        super().__init__()
-        self._operation = operation
-        self._success_message = success_message
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            result = self._operation()
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-            return
-        self.finished.emit(result or self._success_message)
 
 
 class MainWindow(QMainWindow):
@@ -1213,7 +813,3 @@ def main() -> int:
     window = MainWindow()
     window.show()
     return app.exec()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

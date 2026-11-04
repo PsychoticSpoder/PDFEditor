@@ -2,7 +2,8 @@
 
 > **Implementation status:** Items 1–8 are **implemented** (✅). Item 9 is **partially
 > implemented** — page extract/insert and metadata editing shipped; PDF→image and
-> redaction remain open `[ ]` (deferred). All 39 automated tests pass (`pytest -q`).
+> redaction remain open `[ ]` (deferred). All automated tests pass (`pytest -q`).
+> A GUI usability plan is captured in [Section 10](#10-gui-usability--intuitiveness-planned).
 
 ## Summary of current state (updated)
 
@@ -113,6 +114,94 @@ The project is now an installable `pdfeditor` package:
 - [ ] True redaction (content removal) — **deferred** (an overlay-only approach would be
       misleading and unsafe).
 
+## 10. GUI usability & intuitiveness (planned)
+
+> Makes the desktop GUI more intuitive. **Additive** to items 1–9 above.
+> Status: ✅ done · ◐ partial · `[ ]` planned.
+
+### 10.1 Current GUI assessment
+
+- One `QMainWindow` with six flat tabs — Edit, Split, Combine, Convert, Batch, Print
+  (`pdfeditor/gui.py:491-496`).
+- The **Edit** tab stacks four independent group boxes (Rotate / Watermark / Delete Pages /
+  Reorder), each re-asking for its own Input/Output (`gui.py:505-604`).
+- Every operation restarts from zero — there is no notion of a "current document", so the same
+  file path is entered repeatedly.
+- Output is a manual *Save As* for every action (no sensible default).
+- Page ranges are free-text (`1,3,5-7`) with no page count or validation.
+- Multi-file inputs (Merge, Images→PDF) are `;`-joined line edits, so **Merge order** (which is
+  significant) cannot be reordered.
+- Feedback is inconsistent: single-file ops show modal dialogs, Batch uses an inline log; there
+  is no global progress indicator or Cancel.
+
+### 10.2 Priority overview (GUI)
+
+| #  | Improvement                                                             | Impact | Effort | Status |
+|----|-------------------------------------------------------------------------|--------|--------|--------|
+| G0 | Modularize the GUI + add a pytest-qt test harness                       | High   | Medium | ✅     |
+| G1 | Shared `OperationPanel` + smart output defaults (overwrite / save-as-new) | High | Medium | `[ ]`  |
+| G2 | Unified status bar + progress + Cancel; non-modal success feedback      | High   | Medium | `[ ]`  |
+| G3 | Batch cleanup: drive the stack from combo data, file-count preview, dry-run | Medium | Low  | `[ ]`  |
+| G4 | Page-range UX: page count, inline validation, thumbnail picker          | High   | Medium | `[ ]`  |
+| G5 | Ordered file list (add/remove/reorder) for Merge and Images→PDF         | Medium | Low    | `[ ]`  |
+| G6 | Real drop-target styling and drag-to-open                               | Low    | Low    | `[ ]`  |
+| G7 | Feature parity in the GUI: Extract Pages, Insert Pages, Metadata        | Medium | Low    | `[ ]`  |
+| G8 | Document-centric redesign: left action sidebar + shared input/output    | High   | High   | `[ ]`  |
+| G9 | Polish: theme, scrolling, settings persistence, shortcuts, labels, recents | Low | Medium | `[ ]`  |
+
+### 10.3 Phased plan
+
+- **Phase 0 — Enable refactor + test harness** (no visual change) — ✅ done
+  - [x] Split `pdfeditor/gui.py` into `pdfeditor/gui/` (`__init__.py`, `widgets.py`,
+        `workers.py`, `main_window.py`); update `pyproject.toml` packages.
+  - [x] Add `pytest-qt` (dev dep) and `tests/test_gui_smoke.py` (offscreen window build).
+
+- **Phase 1 — Tier 1: intuitive core**
+  - [ ] `OperationPanel` abstraction reused by every operation.
+  - [ ] Smart output defaults (`<stem>_<op>.<ext>`) + "Save as new / Overwrite original".
+  - [ ] Unified status bar + progress + Cancel (global busy state).
+  - [ ] Non-modal success feedback ("Saved to … [Open]").
+  - [ ] Retire `action_to_index`; drive the Batch stack from combo item data.
+
+- **Phase 2 — Tier 2: workflow ergonomics**
+  - [ ] `PageRangeField` (page count + inline validation + "All pages").
+  - [ ] `OrderedFileList` for Merge / Images→PDF.
+  - [ ] Drop-target styling + drag-over highlight + drag-to-open.
+  - [ ] Batch: live file-count preview, contextual options, Dry-run button.
+  - [ ] GUI parity: Extract Pages, Insert Pages, Metadata form.
+
+- **Phase 3 — Tier 1A: document-centric redesign**
+  - [ ] Left action sidebar + `QStackedWidget` of panels; shared Input/Output bar.
+  - [ ] "Current document" state so operations reuse the loaded input.
+  - [ ] Optional `PdfPreview` + `PagePickerDialog` (PySide6 `QtPdf`, no new dependency).
+
+- **Phase 4 — Tier 3: polish**
+  - [ ] `gui/theme.py` stylesheet (spacing, primary/secondary buttons, light/dark).
+  - [ ] `QScrollArea` wrapping + `QSettings` geometry persistence + HiDPI.
+  - [ ] Shortcuts/mnemonics, tab order, default buttons.
+  - [ ] Action-oriented labels, richer error guidance, "Open folder" affordances.
+  - [ ] Recent-files list; menu bar + toolbar.
+
+### 10.4 Key artifacts
+
+| Module | Contents |
+|--------|----------|
+| `pdfeditor/gui/widgets.py` | `DropLineEdit`, `PathRow`, `OutputRow`, `OperationPanel`, `PageRangeField`, `OrderedFileList` |
+| `pdfeditor/gui/workers.py` | `BatchWorker`, `SingleOpWorker` (+ cancellation) |
+| `pdfeditor/gui/preview.py` | `PdfPreview`, `PagePickerDialog` (QtPdf) |
+| `pdfeditor/gui/theme.py` | `apply_theme(app)` |
+| `pdfeditor/gui/main_window.py` | `MainWindow` (sidebar + stacked panels, status, settings) |
+| `tests/test_gui_smoke.py` | pytest-qt smoke / validation tests |
+
+### 10.5 Risks & mitigations
+
+- **Phase 3 is the largest rework** — mitigated by completing Phases 0–2 first, so Phase 3 is
+  mostly wiring.
+- **Preview rendering** — use PySide6's bundled `QtPdf` (`QPdfDocument` / `QPdfView`); no new
+  runtime dependency. Fallback: `pypdfium2`.
+- **GUI/CLI drift** — the GUI delegates validation and behavior to `pdfeditor.core` only.
+- **Testing UI** — pytest-qt with `QT_QPA_PLATFORM=offscreen` in CI.
+
 ---
 
 ## Suggested order of work
@@ -127,4 +216,5 @@ The project is now an installable `pdfeditor` package:
 
 - PDF→image conversion (requires a rendering dependency such as PyMuPDF or pdf2image).
 - True redaction (content removal).
+- GUI improvements G0–G9 (see [Section 10](#10-gui-usability--intuitiveness-planned)).
 

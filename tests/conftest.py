@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 from PIL import Image
 from reportlab.pdfgen import canvas
+
+# Keep any Qt-based tests headless (no display required).
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 @pytest.fixture

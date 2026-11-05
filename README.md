@@ -3,13 +3,14 @@
 This project provides a command-line app and desktop GUI to:
 
 - Edit PDFs (rotate pages, add text watermark)
-- Split PDFs into individual pages
+- Export pages as one PDF per file, one PDF per page, or documents of N pages each — for a
+  single PDF or a whole folder of them (or combine every PDF's pages into a single file)
 - Combine multiple PDFs
 - Convert images to PDF
-- Convert PDF to text
+- Convert PDF to text (one file or a whole folder)
 - Print PDFs
 - Batch process folders of PDFs
-- Batch convert Microsoft Word and Excel files to PDF (Windows only)
+- Convert Microsoft Word and Excel files to PDF (one file or a whole folder; Windows only)
 
 It also includes a desktop GUI built with PySide6.
 
@@ -162,13 +163,17 @@ The GUI is a list of panels down the left:
 
 - **Single PDF Editing**: the page organizer (below) — every page as a thumbnail, with every
   page operation in its toolbar and right-click menu
-- **Merge / Combine**: Merge multiple PDFs
-- **Convert**: Images to PDF, PDF to text
-- **Batch**: Process entire folders
+- **Bulk PDF Editing**: Process entire folders — rotate, watermark, delete pages, reorder and
+  **Export Pages** (one PDF per file, one PDF per page, documents of N pages each, or one PDF
+  combining every file's pages). Page files land straight in the output folder
+- **Merge**: Merge multiple PDFs
+- **Convert**: Images to PDF, PDF to text and Word/Excel to PDF — one at a time, picked from a
+  dropdown so each conversion gets the whole panel — and each one runs on a single file or a
+  whole folder. Images go into one PDF together, or one PDF each
 - **Print**: Print PDFs to default printer
 
 The **Current PDF** bar is gone: the Single PDF Editing panel's own "PDF to edit" row is the
-file picker. **File → Open PDF…** (`Ctrl+O`) or dropping a PDF onto the window loads it there.
+file picker. Dropping a PDF onto the window also loads it there.
 
 ### Page organizer
 
@@ -181,7 +186,12 @@ second file.) From there you can:
 - Select pages with click, `Ctrl`+click, `Shift`+click or `Ctrl+A`, then right-click for
   the page actions: rotate (left/right/180°), delete, export, insert, watermark and
   metadata
-- **Export Pages…** asks whether the pages should become one PDF or one PDF per page
+- **Export Pages…** asks how to split the selection: one PDF, one PDF per page, or documents
+  of N pages each (e.g. ten pages saved as five two-page PDFs). A split that does not divide
+  evenly (ten pages as six-page documents leaves 6 + 4) is confirmed first. The Bulk PDF
+  Editing panel's **Export Pages** action offers the same modes for a whole folder — plus one
+  PDF combining every matching file's pages — and writes its page files directly into the
+  output folder, named after their source PDF
 - Selected thumbnails are outlined, and every "Page N" caption stays on the same line even
   when pages have different shapes
 - Thumbnails keep each page's own shape (a rotated page previews as landscape) and are
@@ -196,9 +206,13 @@ you use **Save As…**.
 
 ### GUI Features
 
-- **Drag-and-drop**: Drop files/folders into most path fields
+- **Drag-and-drop**: Drop files/folders into most path fields, and drop a PDF anywhere on the
+  window to open it in the Single PDF Editing panel. Every field takes only the file type it is
+  for — the "PDF to edit" row, the Merge / Images→PDF / Print lists and the operation inputs
+  all refuse a dropped spreadsheet or folder (with the "no drop" cursor, and a note under the
+  lists) instead of handing it to pypdf. Merge's output path is filled in from the first input
 - **Progress tracking**: Live progress bar and status for batch operations
-- **Error handling**: Continue-on-error option for Office conversions
+- **Error handling**: Continue-on-error option for bulk Word/Excel conversion
 - **Multi-threading**: Configurable worker threads for batch tasks
 
 ## 4. Configuration & Defaults

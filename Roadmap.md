@@ -166,7 +166,7 @@ The project is now an installable `pdfeditor` package:
 
 - **Phase 2 — Tier 2: workflow ergonomics** — ✅ done
   - [x] `PageRangeField` (page count + inline validation + "All pages").
-  - [x] `OrderedFileList` for Merge / Images→PDF.
+  - [x] `OrderedFileList` for Merge / Images→PDF / Print.
   - [x] Drop-target styling (dashed border + drag-over highlight).
   - [x] Window-level drag-to-open (drop a PDF onto the window).
   - [x] Batch: live file-count preview.
@@ -199,17 +199,34 @@ The project is now an installable `pdfeditor` package:
         `Ctrl+A` selection, drag-to-reorder, a toolbar + right-click menu covering rotate,
         delete, extract, insert, split, watermark, metadata, revert and save-as.
   - [x] `watermark_pdf(..., pages=...)` so a watermark can target a selection only.
-  - [x] File → **Organize Pages…** (`Ctrl+Shift+O`) entry point in `MainWindow`.
+  - [x] The organizer is embedded in the **Single PDF Editing** panel; the former
+        File → **Organize Pages…** (`Ctrl+Shift+O`) menu entry in `MainWindow` was removed.
   - [x] Tests: `tests/test_organizer.py` (working-copy session) and
         `tests/test_gui_organizer.py` (grid + dialog actions).
   - [x] Incremental thumbnails: pages are cached by appearance, so an edit re-renders only
         the pages it changed and a drag reorder re-renders nothing at all.
   - [x] Aspect-correct previews: each page renders at its own ratio (and its cell resizes to
         match), so rotated/landscape pages are no longer squashed into a portrait cell.
+  - [x] A thumbnail **zoom** slider in the Single PDF Editing panel scales the cells and
+        re-renders the pages at the higher resolution, so page contents can be read in detail.
+        Cell sizes come from each page's aspect ratio, so a zoom relayouts the grid once and
+        leaves no stale, overlapping cells; the zoom change never blocks the GUI thread and a
+        finished render settles the layout immediately.
+  - [x] Lazy rendering: a document past a page threshold renders only the pages around the
+        viewport (plus a margin) and re-renders them on scroll, dropping the thumbnails that
+        scroll far away. Opening or zooming a 500-page file no longer renders every page.
+  - [x] The zoom only re-renders once the mouse button is released — whether the press landed
+        on the handle or on the bar — and an operation's status message (e.g. "Reordered to
+        2,1,3,4.") falls back to the page summary on its own rather than waiting for the next
+        render (which, with lazy rendering, used to need a scroll).
   - [x] A drag now commits the new order to the working copy, so Save As writes the order
         that is on screen.
-  - [x] Extract and Split merged into one **Export Pages…** action: one PDF, or one PDF per
-        page.
+  - [x] Extract and Split merged into one **Export Pages…** action: one PDF, one PDF per page,
+        or documents of N pages each (`split_pdf(..., chunk_size=N)`), so ten pages can be
+        saved as five two-page PDFs.
+  - [x] A chunked export that would leave a short final document (ten pages as six-page
+        documents means 6 + 4) warns the user and lets them continue, instead of splitting
+        silently.
   - [x] Edits are recorded and then written in a single pass, only when a real file is
         needed, so large PDFs stay responsive — and rotating transforms the cached preview
         instead of re-rendering it.
@@ -224,8 +241,47 @@ The project is now an installable `pdfeditor` package:
         QThread is destroyed).
   - [x] Removed the shared "Current PDF" bar (field, Open PDF button, recent-documents
         dropdown and the `PdfPreview` first-page thumbnail): the panel's own "PDF to edit" row
-        is now the single file picker, and File → Open PDF (`Ctrl+O`) or dropping a PDF onto
-        the window loads it there.
+        is now the single file picker, and dropping a PDF onto the window loads it there.
+  - [x] Removed the **File → Open PDF…** (`Ctrl+O`) menu entry as well: the panel's "PDF to
+        edit" row is the one file picker, so the menu kept only Quit.
+  - [x] Sidebar tidy-up: **Merge / Combine** renamed to **Merge**, **Batch** renamed to
+        **Bulk PDF Editing** and moved directly under Single PDF Editing, and the **Print** panel
+        now takes its PDFs as an ordered list so the print order can be arranged first.
+  - [x] **Bulk PDF Editing** is now PDF-only: Print moved out (the Print panel already takes a
+        list) and PDF to Text, Word to PDF and Excel to PDF moved to **Convert**. Word/Excel
+        conversion there uses `ConversionPanel`, so each one handles a single file or a whole
+        folder.
+  - [x] The bulk **Split** action is now **Export Pages** and offers the same modes as the Single
+        PDF Editing panel — one PDF per input file, one PDF per page, or documents of N pages
+        each — through the shared `ExportModeSelector`, plus one PDF combining every matching
+        file's pages (`batch_split_pdfs(..., mode=..., chunk_size=...)`).
+  - [x] Bulk page exports no longer nest a folder per input PDF: every file lands in the output
+        folder itself, named after its source (`report_page_001.pdf`). A filename prefix keeps
+        the source name when several PDFs are exported at once, so nothing is overwritten.
+  - [x] The ordered input lists (Merge, Images→PDF, Print) only take the file type they are for:
+        a dropped folder or spreadsheet is refused with a note under the list instead of
+        reaching pypdf (which used to fail with "Stream has ended unexpectedly"). `run_combine`
+        / `run_images_to_pdf` / `run_print` report the same thing as a clear error, and
+        window-level drag-to-open only accepts PDFs — dropping a spreadsheet no longer switches
+        to the Single PDF Editing panel and reports a pypdf traceback.
+  - [x] The same filtering now covers every path field: `DropLineEdit(filter_text=...)` refuses a
+        drop that is not the type the field is for (so an xlsx dropped on "PDF to edit" or on any
+        operation's PDF input is refused with the "no drop" cursor), and
+        `PageOrganizerWidget.load` reports "Not a PDF file" / "could not be read as a PDF" — as a
+        one-line warning rather than a pypdf traceback — when a wrong file gets that far.
+  - [x] **Convert** shows one conversion at a time, selected from a "Conversion" dropdown
+        (Images to PDF, PDF to Text, Word to PDF, Excel to PDF). Stacking all four used to crowd
+        them; the chosen pane now owns the panel, and the Images→PDF list gets its spare height
+        instead of two rows.
+  - [x] Images→PDF can make one PDF for every image or one PDF per image (`Make` dropdown); the
+        output row swaps between a filename and a folder, and images that would become the same
+        file (`photo.png` + `photo.jpg`) are reported instead of overwriting each other.
+  - [x] `ConversionPanel`'s bulk form no longer leaves unused fields floating over the
+        "Input Folder" label: a field that is never added to the layout sits in the page's
+        top-left corner, on top of the first row's label, so it is hidden instead.
+  - [x] Merge's "Output PDF" row is now really auto-filled from the first input in the list
+        (`a.pdf` → `a_combined.pdf`) until the user puts a path of their own there, matching what
+        the placeholder has always promised (and what Images→PDF does too).
 
 ### 10.4 Key artifacts
 

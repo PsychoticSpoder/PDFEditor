@@ -16,9 +16,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QImage, QTransform
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QRadioButton,
+    QSlider,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -48,9 +49,19 @@ from .preview import (
     _parse_spec_to_pages,
     qtpdf_available,
 )
-from .widgets import DropLineEdit, PageGridWidget
+from .widgets import (
+    ASPECT_ROLE,
+    MAX_THUMB_SCALE,
+    MIN_THUMB_SCALE,
+    DropLineEdit,
+    ExportModeSelector,
+    PageGridWidget,
+)
 
 logger = logging.getLogger(__name__)
+
+#: Documents with more pages than this render lazily (only the pages around the viewport).
+_LAZY_THRESHOLD = 40
 
 
 class MetadataDialog(QDialog):
@@ -140,22 +151,32 @@ class WatermarkDialog(QDialog):
         return self.selected_only.isChecked() and self.selected_only.isEnabled()
 
 
-class ExportPagesDialog(QDialog):
-    """Ask whether the exported pages go into one PDF or one PDF per page."""
+def _documents_label(count: int, size: int) -> str:
+    """Describe ``count`` exported files of ``size`` pages, e.g. ``"2 documents of 6 pages"``."""
+    return f"{count} {'document' if count == 1 else 'documents'} of {size} pages"
 
-    def __init__(self, scope_label: str, parent: QWidget | None = None) -> None:
+
+class ExportPagesDialog(QDialog):
+    """Ask how the exported pages should be split up.
+
+    ``page_count`` is how many pages the export covers; it is handed to the shared
+    :class:`~pdfeditor.gui.widgets.ExportModeSelector`, which uses it to warn about a chunked
+    split that leaves a shorter final document (see :meth:`uneven_split
+    <pdfeditor.gui.widgets.ExportModeSelector.uneven_split>`).
+    """
+
+    def __init__(
+        self, scope_label: str, page_count: int = 0, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Export pages")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(420)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"Export {scope_label} as:"))
 
-        self.single_button = QRadioButton("One PDF containing every selected page")
-        self.single_button.setChecked(True)
-        self.per_page_button = QRadioButton("A separate PDF for each page")
-        layout.addWidget(self.single_button)
-        layout.addWidget(self.per_page_button)
+        self.selector = ExportModeSelector(page_count)
+        layout.addWidget(self.selector)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -165,9 +186,40 @@ class ExportPagesDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Export")
         layout.addWidget(buttons)
 
-    def single_pdf(self) -> bool:
-        """True for one combined PDF, False for one file per page."""
-        return self.single_button.isChecked()
+    def mode(self) -> str:
+        """The chosen export: one combined PDF, one PDF per page, or N-page documents."""
+        return self.selector.mode()
+
+    def chunk_size(self) -> int:
+        """How many pages go into each document in chunked mode."""
+        return self.selector.chunk_size()
+
+    def accept(self) -> None:
+        """Close the dialog, asking first about a split that does not divide evenly."""
+        if self._confirm_uneven_split():
+            super().accept()
+
+    def _confirm_uneven_split(self) -> bool:
+        """Ask about a short final document; ``True`` means the export should go ahead.
+
+        Ten pages as six-page documents gives 6 + 4, which is usually a slip but sometimes
+        wanted, so it is warned about rather than blocked.
+        """
+        split = self.selector.uneven_split()
+        if split is None:
+            return True
+        full, remainder = split
+        chunk = self.selector.chunk_size()
+        files = [_documents_label(full, chunk)] if full else []
+        files.append(_documents_label(1, remainder))
+        # An uneven split always covers several pages, so the plural reads correctly here.
+        answer = QMessageBox.question(
+            self,
+            "Uneven split",
+            f"{self.selector.page_count} pages do not divide evenly into documents of "
+            f"{chunk} pages.\n\nYou will get {' and '.join(files)}.\n\nExport anyway?",
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
 
 class PageOrganizerWidget(QWidget):
@@ -200,14 +252,47 @@ class PageOrganizerWidget(QWidget):
         self.document: PageOrganizerDocument | None = None
         self.confirm_destructive = True
         self._loader: PdfThumbnailLoader | None = None
-        self._total = 0
-        self._rendered = 0
         self._cleaned = False
         # Thumbnail cache: one identity per page appearance, so an edit only re-renders the
         # pages that actually changed (and a drag reorder re-renders nothing at all).
         self._keys: list[int] = []
         self._images: dict[int, QImage] = {}
+        #: Page shape per identity; kept even when a thumbnail's pixmap is dropped.
+        self._aspects: dict[int, float] = {}
         self._next_key = 0
+        # Lazy rendering: a big document only renders the pages around the viewport. The rows
+        # with a render in flight are tracked so a scroll can tell what still needs asking for.
+        self._lazy = False
+        self._requested: set[int] = set()
+        #: True while the zoom handle is held, so nothing re-renders underneath the drag.
+        self._zoom_dragging = False
+        #: An operation's own status message falls back to the page summary on its own.
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(4000)
+        self._status_timer.timeout.connect(self._update_status)
+        # Thumbnail zoom: dragging the slider only previews the value (label only); the cells
+        # are resized and the pages re-rendered once it settles, which keeps dragging smooth.
+        #: The value the slider is asking for, and the value the grid actually shows.
+        self._thumbnail_scale = 100
+        self._applied_scale = 100
+        self._zoom_timer = QTimer(self)
+        self._zoom_timer.setSingleShot(True)
+        self._zoom_timer.setInterval(120)
+        self._zoom_timer.timeout.connect(self._commit_zoom)
+        # Layout coalescing: when a streamed page changes its cell width (a landscape page in
+        # a portrait document), one relayout is requested once the burst settles instead of
+        # one per page — a per-page relayout is what made long documents crawl while loading.
+        # Connected to the grid further below, once the grid exists.
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.setInterval(60)
+        # Scroll/resize debounce: whichever pages have scrolled into view are rendered once the
+        # view settles, rather than on every pixel of movement.
+        self._view_timer = QTimer(self)
+        self._view_timer.setSingleShot(True)
+        self._view_timer.setInterval(120)
+        self._view_timer.timeout.connect(self._render_needed)
         self._actions = self._build_actions()
 
         layout = QVBoxLayout(self)
@@ -227,6 +312,9 @@ class PageOrganizerWidget(QWidget):
         self.grid.customContextMenuRequested.connect(self._show_context_menu)
         self.grid.itemSelectionChanged.connect(self._update_status)
         self.grid.rows_moved.connect(self.commit_order)
+        self._layout_timer.timeout.connect(self.grid.doItemsLayout)
+        self.grid.verticalScrollBar().valueChanged.connect(self._on_view_moved)
+        self.grid.horizontalScrollBar().valueChanged.connect(self._on_view_moved)
         layout.addWidget(self.grid, stretch=1)
         layout.addLayout(self._build_toolbar())
 
@@ -243,7 +331,9 @@ class PageOrganizerWidget(QWidget):
     # -- the document being edited ---------------------------------------------
     def _build_file_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        self.file_edit = DropLineEdit()
+        # Only a PDF may be dropped here: anything else is refused up front rather than handed
+        # to the organizer (which would fail deep inside pypdf).
+        self.file_edit = DropLineEdit(filter_text="PDF Files (*.pdf)")
         self.file_edit.setPlaceholderText("Drop or choose the PDF to edit")
         self.file_edit.textChanged.connect(self._on_file_text_changed)
         self.open_button = QPushButton("Open PDF")
@@ -255,11 +345,19 @@ class PageOrganizerWidget(QWidget):
 
     def load(self, path: str) -> bool:
         """Open ``path`` as the document to edit; False (with a message) when it fails."""
+        candidate = Path(path).expanduser()
+        if not candidate.is_file() or candidate.suffix.lower() != ".pdf":
+            logger.warning("Not a PDF file: %s", path)
+            self.status.setText(f"Error: Not a PDF file: {candidate.name}")
+            return False
         try:
             document = PageOrganizerDocument(path)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Could not open %s in the organizer", path)
-            self.status.setText(f"Error: {exc}")
+            # A file that cannot be read is a user-input problem, not a bug: one warning line,
+            # with the traceback still available at debug level.
+            logger.warning("Could not open %s in the organizer: %s", path, exc)
+            logger.debug("Open failure detail", exc_info=True)
+            self.status.setText(f"Error: {candidate.name} could not be read as a PDF.")
             return False
         self.close_document()
         self.document = document
@@ -269,7 +367,7 @@ class PageOrganizerWidget(QWidget):
             self.file_edit.setText(str(path))
             self.file_edit.blockSignals(False)
         self.reload()
-        self.status.setText(f"Editing {Path(path).name}.")
+        self._flash_status(f"Editing {Path(path).name}.")
         return True
 
     def close_document(self) -> None:
@@ -277,6 +375,7 @@ class PageOrganizerWidget(QWidget):
         if self._cleaned:
             return
         self._cleaned = True
+        self._view_timer.stop()
         self._stop_loader()
         if self.document is not None:
             self.document.close()
@@ -376,6 +475,29 @@ class PageOrganizerWidget(QWidget):
         self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.more_button.setMenu(self.build_actions_menu())
         row.addWidget(self.more_button)
+        row.addSpacing(12)
+        row.addWidget(QLabel("Zoom"))
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(round(MIN_THUMB_SCALE * 100), round(MAX_THUMB_SCALE * 100))
+        self.zoom_slider.setSingleStep(25)
+        self.zoom_slider.setPageStep(25)
+        self.zoom_slider.setFixedWidth(140)
+        # Tracking off so dragging the handle does not fire a value change (and a re-render)
+        # for every pixel moved; only the label follows the drag.
+        self.zoom_slider.setTracking(False)
+        self.zoom_slider.setToolTip(
+            "Scale the page thumbnails up to read the contents of a page in detail"
+        )
+        self.zoom_label = QLabel("100%")
+        # A fixed width keeps the text from reflowing the toolbar (and so the grid) mid-drag.
+        self.zoom_label.setFixedWidth(52)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_slider.sliderPressed.connect(self._on_zoom_pressed)
+        self.zoom_slider.sliderReleased.connect(self._on_zoom_released)
+        self.zoom_slider.sliderMoved.connect(self._preview_zoom)
+        self.zoom_slider.valueChanged.connect(self._schedule_zoom)
+        row.addWidget(self.zoom_slider)
+        row.addWidget(self.zoom_label)
         row.addStretch(1)
         self.save_button = QPushButton("Save As…")
         self.save_button.setToolTip("Write the edited document out to a new file")
@@ -409,7 +531,9 @@ class PageOrganizerWidget(QWidget):
             self.grid.clear()
             self._keys = []
             self._images.clear()
-            self._total = self._rendered = 0
+            self._aspects.clear()
+            self._requested = set()
+            self._lazy = False
             self.status.setText("Open a PDF to start editing.")
             return
         try:
@@ -418,7 +542,10 @@ class PageOrganizerWidget(QWidget):
             logger.exception("Could not count the pages of the working copy")
             count = 0
         self._images.clear()
+        self._aspects.clear()
         self._keys = [self._new_key() for _ in range(count)]
+        # A small document is rendered whole; a big one only where it is being looked at.
+        self._lazy = count > _LAZY_THRESHOLD
         self._redraw()
 
     def _new_key(self) -> int:
@@ -429,29 +556,29 @@ class PageOrganizerWidget(QWidget):
     def _redraw(self) -> None:
         """Rebuild the grid for :attr:`_keys`, reusing every cached thumbnail.
 
-        Only pages without a cached image are handed to the renderer, so rotating or
-        deleting a single page no longer redraws the whole document.
+        Only pages that actually need a thumbnail are handed to the renderer, so rotating or
+        deleting a single page no longer redraws the whole document — and a huge document only
+        renders the part of it that is on screen.
         """
         self._stop_loader()
         self.grid.blockSignals(True)
         self.grid.clear()
-        pending: list[int] = []
         for row, key in enumerate(self._keys):
             item = QListWidgetItem(f"Page {row + 1}")
             item.setData(Qt.ItemDataRole.UserRole, row + 1)
             item.setSizeHint(self.grid.item_size())
+            aspect = self._aspects.get(key)
+            if aspect is not None and self.grid.is_grid():
+                # A page whose pixmap was dropped still knows its shape, so its cell holds.
+                item.setData(ASPECT_ROLE, aspect)
+                item.setSizeHint(self.grid.cell_size_for_aspect(aspect))
             self.grid.addItem(item)
             image = self._images.get(key)
-            if image is None:
-                pending.append(row)
-            else:
+            if image is not None:
                 self.grid.set_thumbnail(item, image)
         self.grid.blockSignals(False)
-        self._total = len(self._keys)
-        self._rendered = self._total - len(pending)
         self._update_status()
-        if pending:
-            self._render_rows(pending)
+        self._render_needed()
 
     def _render_rows(self, rows: list[int]) -> None:
         """Ask the worker thread for the thumbnails of ``rows`` only."""
@@ -464,27 +591,248 @@ class PageOrganizerWidget(QWidget):
         self._loader.rendered.connect(self._on_rendered)
         self._loader.failed.connect(self._set_message)
         self._loader.start()
+        self._requested = set(rows)
 
-    def _stop_loader(self) -> None:
-        if self._loader is not None:
-            self._loader.stop()
-            self._loader = None
+    def _stop_loader(self, wait: bool = True) -> None:
+        """Stop the current render.
+
+        ``wait=False`` asks the worker to stop without blocking the GUI thread — what a zoom
+        change wants, since waiting here froze the window until the in-flight page finished.
+        Teardown still waits (``wait=True``), because the temporary working copy cannot be
+        deleted while the worker still has the file open on Windows.
+        """
+        loader, self._loader = self._loader, None
+        self._requested = set()
+        if loader is None:
+            return
+        # Disconnect first: a render already in flight must not touch our state after we have
+        # moved on (its images belong to the old resolution and would overwrite the new ones).
+        for signal in (loader.rendered, loader.failed):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        if wait:
+            loader.stop()
+        else:
+            loader.cancel()
+
+    # -- thumbnail zoom --------------------------------------------------------
+    def set_thumbnail_scale(self, percent: int) -> None:
+        """Zoom the page thumbnails to ``percent`` (100 = the default size).
+
+        The grid's cells resize and every page is rendered again at the new resolution, so
+        zooming in reveals more page detail instead of a blurry enlargement of a small
+        thumbnail. The slider calls this once its value has settled; it is also safe to call
+        directly (the slider and its label are kept in sync).
+        """
+        percent = min(max(percent, self.zoom_slider.minimum()), self.zoom_slider.maximum())
+        self._zoom_timer.stop()
+        # Keep the slider and its label in step even for a programmatic call.
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(percent)
+        self.zoom_slider.blockSignals(False)
+        self.zoom_label.setText(f"{percent}%")
+        self._thumbnail_scale = percent
+        if percent == self._applied_scale:
+            # Compare against what the grid actually shows, not the requested value: a click
+            # on the bar sets the request on press, so testing the request here would skip the
+            # commit entirely and the zoom would never be applied.
+            return
+        self._commit_zoom()
+
+    @Slot()
+    def _on_zoom_pressed(self) -> None:
+        """The handle was grabbed: show the value live but do no work until it is let go.
+
+        The timer is deliberately left running: a click on the bar sets the value before this
+        signal, so the queued commit must survive the press and be deferred (not cancelled)
+        until the button comes up.
+        """
+        self._zoom_dragging = True
+
+    @Slot()
+    def _on_zoom_released(self) -> None:
+        """The handle was released: only now is the grid resized and re-rendered.
+
+        Reads :meth:`sliderPosition` because Qt emits ``sliderReleased`` *before* it applies
+        the new value, so ``value()`` still holds the old one at this point.
+        """
+        self._zoom_dragging = False
+        self._zoom_timer.stop()
+        self.set_thumbnail_scale(self.zoom_slider.sliderPosition())
+
+    @Slot(int)
+    def _preview_zoom(self, percent: int) -> None:
+        """Reflect the handle while it is dragged — label only, so dragging stays smooth."""
+        self.zoom_label.setText(f"{percent}%")
+
+    @Slot(int)
+    def _schedule_zoom(self, percent: int) -> None:
+        """Queue a zoom change made without dragging (keyboard, or a click on the bar).
+
+        Nothing is queued while the handle is held: the re-render happens once on release,
+        so dragging the slider never competes with pages re-rendering underneath it.
+        """
+        self.zoom_label.setText(f"{percent}%")
+        if self._zoom_dragging or percent == self._thumbnail_scale:
+            return
+        self._thumbnail_scale = percent
+        self._zoom_timer.start()
+
+    def _zoom_held(self) -> bool:
+        """True while the user is still using the zoom slider.
+
+        A press that lands on the *bar* rather than exactly on the handle changes the value
+        straight away and emits no ``sliderPressed``/``sliderReleased`` (and leaves
+        ``isSliderDown()`` False), so the mouse button state is the only reliable sign that a
+        drag is in progress. Without this the queued re-render fired ~120 ms into the drag —
+        which is why zooming only lagged *sometimes*, depending on where the press landed.
+        """
+        return (
+            self._zoom_dragging
+            or self.zoom_slider.isSliderDown()
+            or bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+        )
+
+    def _commit_zoom(self) -> None:
+        """Resize the grid's cells to the chosen zoom and re-render at the new resolution.
+
+        While the slider is still being dragged the commit is postponed (by restarting the
+        timer), so no page is ever re-rendered underneath an in-progress drag.
+        """
+        if self._zoom_held():
+            self._zoom_timer.start()
+            return
+        self.grid.set_thumbnail_scale(self._thumbnail_scale / 100.0)
+        self._applied_scale = self._thumbnail_scale
+        self._rerender_thumbnails()
+
+    def _rerender_thumbnails(self) -> None:
+        """Render every page again at the current zoom, reusing the existing grid rows.
+
+        Unlike :meth:`_redraw` this does not rebuild the items — a zoom never changes the page
+        order or count — so committing a new zoom stays cheap and snappy.
+        """
+        if self.document is None:
+            return
+        # Non-blocking: the old worker stops on its own while the new render starts, so the
+        # zoom slider stays responsive even when a page render is in flight.
+        self._stop_loader(wait=False)
+        self._images.clear()
+        # The page shapes do not change with the zoom, so the cells keep their sizes and only
+        # the images are re-rendered (in lazy mode, just the ones on screen).
+        self._render_needed()
 
     @Slot(int, QImage)
     def _on_rendered(self, page_index: int, image: QImage) -> None:
         # The working copy always ends up in grid order, so a page index is also a row.
         if 0 <= page_index < len(self._keys):
-            self._images[self._keys[page_index]] = image
+            key = self._keys[page_index]
+            self._images[key] = image
+            self._aspects[key] = image.width() / image.height()
             item = self.grid.item(page_index)
             if item is not None:
+                hint_before = item.sizeHint()
                 self.grid.set_thumbnail(item, image)
-        self._rendered += 1
-        if self._rendered >= self._total:
-            self._update_status()
+                if item.sizeHint() != hint_before:
+                    # A wider cell shifts every following cell, so ask for one coalesced
+                    # relayout rather than letting each streamed page invalidate the layout.
+                    self._layout_timer.start()
+        self._requested.discard(page_index)
+        if not self._requested:
+            # A finished render settles the layout straight away: while images stream in, Qt
+            # defers its own relayout, so without this the last page could be drawn at a stale
+            # offset until the next idle moment (the "overlapping pages" at high zoom).
+            # The status summary is deliberately left alone here: refreshing it would wipe an
+            # operation's message as soon as a (possibly scroll-triggered) render finished.
+            self._layout_timer.stop()
+            self.grid.doItemsLayout()
 
     @Slot(str)
     def _set_message(self, message: str) -> None:
         self.status.setText(message)
+
+    # -- lazy rendering --------------------------------------------------------
+    @Slot()
+    def _on_view_moved(self) -> None:
+        """The viewport scrolled; pick up whichever pages are on screen once it settles."""
+        self._view_timer.start()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._view_timer.start()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._view_timer.start()
+
+    def _visible_rows(self) -> list[int] | None:
+        """The rows around the viewport, or None while the view cannot be measured yet.
+
+        Uses each item's real rect rather than :meth:`QListView.indexAt`, which is unreliable
+        straight after the grid is rebuilt (before the view has laid out) and used to report
+        the last page as "visible" — rendering the whole document at once.
+        """
+        count = self.grid.count()
+        if count == 0:
+            return []
+        viewport = self.grid.viewport().rect()
+        if viewport.width() <= 1 or viewport.height() <= 1:
+            return None
+        # Look at a band half a viewport tall above and below, so short scrolls stay instant
+        # without keeping far more pages in memory than can be seen at once.
+        pad = max(viewport.height() // 2, 1)
+        band = viewport.adjusted(0, -pad, 0, pad)
+        rows: list[int] = []
+        for row in range(count):
+            rect = self.grid.visualItemRect(self.grid.item(row))
+            if rect.isValid() and not rect.isEmpty() and rect.intersects(band):
+                rows.append(row)
+        return rows or None
+
+    def _want_rows(self) -> list[int] | None:
+        """The rows that should have a thumbnail now (None while the view is unmeasured)."""
+        if not self._lazy:
+            return list(range(len(self._keys)))
+        return self._visible_rows()
+
+    def _render_needed(self) -> None:
+        """Render whatever the view needs now, and drop what has scrolled far away.
+
+        A small document is rendered whole (what the common case and the tests expect); a big
+        one renders only the pages around the viewport, so opening or zooming a 500-page
+        document no longer renders every page at once.
+        """
+        if self.document is None:
+            return
+        want = self._want_rows()
+        if want is None:
+            # The grid has not been laid out yet; try again once it has a size.
+            if self.isVisible():
+                self._view_timer.start()
+            return
+        if self._lazy:
+            self._evict_far_rows(set(want))
+        missing = [row for row in want if self._keys[row] not in self._images]
+        if self._loader is not None and set(missing) <= self._requested:
+            return  # the render in flight already covers everything the view needs
+        self._stop_loader(wait=False)
+        if missing:
+            self._render_rows(missing)
+
+    def _evict_far_rows(self, keep: set[int]) -> None:
+        """Drop the thumbnails of pages well outside the viewport, to bound memory."""
+        for row, key in enumerate(self._keys):
+            if row in keep:
+                continue
+            item = self.grid.item(row)
+            # Keyed off the item, not the cache: a zoom empties the cache but the items keep
+            # their old pixmaps until they are cleared here.
+            if item is None or not self.grid.has_thumbnail(item):
+                continue
+            self._images.pop(key, None)
+            self.grid.clear_thumbnail(item)
 
     # -- selection -------------------------------------------------------------
     def selected_spec(self) -> str:
@@ -504,6 +852,8 @@ class PageOrganizerWidget(QWidget):
         return spec
 
     def _update_status(self) -> None:
+        """Show the page summary and refresh every action's enabled state."""
+        self._status_timer.stop()
         has_selection = bool(self.grid.selected_rows())
         loaded = self.document is not None
         for action in self._actions.values():
@@ -513,6 +863,16 @@ class PageOrganizerWidget(QWidget):
             self.status.setText(
                 f"{self.grid.count()} page(s) · {len(self.grid.selected_rows())} selected"
             )
+
+    def _flash_status(self, message: str) -> None:
+        """Show what an operation did, then fall back to the page summary on its own.
+
+        The summary used to come back only when the next render finished, which with lazy
+        rendering can be a scroll away — so an operation's message (e.g. "Reordered to
+        2,1,3,4.") looked stuck. A timer restores the summary regardless of rendering.
+        """
+        self.status.setText(message)
+        self._status_timer.start()
 
     @Slot()
     def _show_context_menu(self, pos) -> None:
@@ -599,7 +959,7 @@ class PageOrganizerWidget(QWidget):
             item.setText(f"Page {row + 1}")
             item.setData(Qt.ItemDataRole.UserRole, row + 1)
         self._update_status()
-        self.status.setText(f"Reordered to {spec}.")
+        self._flash_status(f"Reordered to {spec}.")
 
     def delete_selected(self) -> None:
         """Delete the selected pages from the working copy."""
@@ -621,16 +981,19 @@ class PageOrganizerWidget(QWidget):
         )
 
     def export_pages(self) -> None:
-        """Export the selection as one PDF, or as one PDF per page."""
+        """Export the selection as one PDF, one PDF per page, or in fixed-size documents."""
         if self._require_document() is None:
             return
         spec = self.selected_spec() or None
         scope = f"page(s) {spec}" if spec else "every page"
-        dialog = ExportPagesDialog(scope, self)
+        dialog = ExportPagesDialog(scope, len(self._rows_for(spec)), self)
         if not dialog.exec():
             return
-        if dialog.single_pdf():
+        mode = dialog.mode()
+        if mode == ExportModeSelector.SINGLE:
             self.export_single(spec)
+        elif mode == ExportModeSelector.CHUNKED:
+            self.export_chunked(spec, dialog.chunk_size())
         else:
             self.export_per_page(spec)
 
@@ -662,6 +1025,19 @@ class PageOrganizerWidget(QWidget):
         self._export(
             lambda: written.extend(self.document.split(output_dir, spec, None)),
             lambda: f"Wrote {len(written)} page file(s) to {output_dir}.",
+        )
+
+    def export_chunked(self, spec: str | None = None, pages_per_file: int = 2) -> None:
+        """Write the pages into a folder as documents of ``pages_per_file`` pages each."""
+        output_dir = QFileDialog.getExistingDirectory(self, "Choose a folder for the split PDFs")
+        if not output_dir:
+            return
+        written: list[Path] = []
+        self._export(
+            lambda: written.extend(self.document.split(output_dir, spec, None, pages_per_file)),
+            lambda: (
+                f"Wrote {len(written)} file(s) of up to {pages_per_file} page(s) to {output_dir}."
+            ),
         )
 
     def insert_pages(self) -> None:
@@ -743,7 +1119,7 @@ class PageOrganizerWidget(QWidget):
         self._stop_loader()
         document.revert()
         self.reload()
-        self.status.setText("Reverted to the original document.")
+        self._flash_status("Reverted to the original document.")
 
     def save_as(self) -> str | None:
         """Write the working copy out to a file the user picks."""
@@ -764,7 +1140,7 @@ class PageOrganizerWidget(QWidget):
             logger.exception("Could not save the organized PDF")
             self.status.setText(f"Error: {exc}")
             return None
-        self.status.setText(f"Saved {saved}.")
+        self._flash_status(f"Saved {saved}.")
         self.saved.emit(str(saved))
         return str(saved)
 
@@ -801,7 +1177,7 @@ class PageOrganizerWidget(QWidget):
         else:
             self._keys = list(keys() if callable(keys) else keys)
             self._redraw()
-        self.status.setText(describe() if callable(describe) else describe)
+        self._flash_status(describe() if callable(describe) else describe)
 
     def _export(self, operation, describe) -> None:
         """Run an action that writes files outside the working copy; no grid reload."""
@@ -813,7 +1189,7 @@ class PageOrganizerWidget(QWidget):
             logger.exception("Page organizer export failed")
             self.status.setText(f"Error: {exc}")
             return
-        self.status.setText(describe() if callable(describe) else describe)
+        self._flash_status(describe() if callable(describe) else describe)
 
     # -- lifecycle (see :meth:`close_document`) ---------------------------------
 

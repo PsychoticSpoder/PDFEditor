@@ -206,10 +206,19 @@ class PdfThumbnailLoader(QObject):
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
-        """Cancel rendering and stop the thread (safe to call more than once)."""
+    def cancel(self) -> None:
+        """Ask the worker to stop without waiting for its thread.
+
+        The GUI thread never blocks here: the worker notices the request between pages, its
+        thread quits on its own, and :data:`_ACTIVE_LOADERS` keeps the loader alive until the
+        thread has really stopped — so it can never be destroyed while still running.
+        """
         self._worker.cancel()
         self._thread.quit()
+
+    def stop(self) -> None:
+        """Cancel rendering and stop the thread (safe to call more than once)."""
+        self.cancel()
         self._thread.wait(2000)
 
 

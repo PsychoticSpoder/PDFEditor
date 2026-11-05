@@ -20,9 +20,15 @@ from .constants import (
     DEFAULT_GLOB_PATTERN,
     DEFAULT_WATERMARK_FONT_SIZE,
     DEFAULT_WATERMARK_OPACITY,
+    EXPORT_CHUNKED,
+    EXPORT_COMBINED,
+    EXPORT_MODES,
+    EXPORT_PER_PAGE,
+    EXPORT_SINGLE,
     WATERMARK_ROTATION_ANGLE,
 )
 from .io_utils import (
+    OperationCancelled,
     _atomic_write_bytes,
     _atomic_write_pdf,
     _atomic_write_text,
@@ -91,18 +97,29 @@ def reorder_pages(input_file: Path, output_file: Path, order_spec: str) -> None:
     _atomic_write_pdf(writer, output_file)
 
 
-def extract_pages(input_file: Path, output_file: Path, pages: str) -> None:
+def _selected_page_indexes(reader: PdfReader, pages: str | None) -> list[int]:
+    """The 0-based indexes of the pages an export covers, in document order.
+
+    ``pages`` uses :func:`_parse_page_range` syntax (e.g. ``"1,3,5-7"``); ``None`` (or an
+    empty spec) selects every page.
+    """
+    if pages:
+        return sorted(_parse_page_range(pages, len(reader.pages)))
+    return list(range(len(reader.pages)))
+
+
+def extract_pages(input_file: Path, output_file: Path, pages: str | None = None) -> None:
     """Copy a subset of pages from one PDF into a new PDF.
 
     Args:
         input_file: Source PDF.
         output_file: Destination PDF containing only the selected pages (in order).
-        pages: 1-based page selection, e.g. ``"1,3,5-7"``.
+        pages: 1-based page selection, e.g. ``"1,3,5-7"``. ``None`` copies every page, which
+            makes this the "keep the whole document as a new file" case of an export.
     """
     reader = PdfReader(str(input_file))
-    selected = sorted(_parse_page_range(pages, len(reader.pages)))
     writer = PdfWriter()
-    for page_index in selected:
+    for page_index in _selected_page_indexes(reader, pages):
         writer.add_page(reader.pages[page_index])
     _atomic_write_pdf(writer, output_file)
 
@@ -169,33 +186,47 @@ def set_metadata(input_file: Path, output_file: Path, metadata: dict[str, str]) 
     _atomic_write_pdf(writer, output_file)
 
 
-def split_pdf(input_file: Path, output_dir: Path, pages: str | None, prefix: str | None) -> list[Path]:
-    """Split a PDF into individual page files.
-    
+def split_pdf(
+    input_file: Path,
+    output_dir: Path,
+    pages: str | None,
+    prefix: str | None,
+    chunk_size: int | None = None,
+) -> list[Path]:
+    """Split a PDF into individual page files, or into groups of pages.
+
     Args:
         input_file: Path to the input PDF file.
         output_dir: Directory to write split PDF files.
         pages: Optional page range to split (e.g., "1,3,5-7").
         prefix: Optional prefix for output filenames.
-    
+        chunk_size: Pages per output file. ``None`` (the default) writes one file per page;
+            any other value writes one file per group of that many pages, so a 10-page
+            selection with ``chunk_size=2`` becomes five two-page PDFs. The final group may
+            be shorter, and the pages keep their original order.
+
     Returns:
         List of paths to created PDF files.
     """
     logger.info(f"Splitting {input_file} in {output_dir}")
     reader = PdfReader(str(input_file))
-
-    if pages:
-        selected_pages = sorted(_parse_page_range(pages, len(reader.pages)))
-    else:
-        selected_pages = list(range(len(reader.pages)))
+    selected_pages = _selected_page_indexes(reader, pages)
 
     name_prefix = prefix.strip() if prefix and prefix.strip() else input_file.stem
+    group_size = max(1, chunk_size) if chunk_size else 1
     written_files: list[Path] = []
 
-    for page_index in selected_pages:
+    for start in range(0, len(selected_pages), group_size):
+        group = selected_pages[start : start + group_size]
         writer = PdfWriter()
-        writer.add_page(reader.pages[page_index])
-        output_file = output_dir / f"{name_prefix}_page_{page_index + 1:03d}.pdf"
+        for page_index in group:
+            writer.add_page(reader.pages[page_index])
+        if group_size == 1:
+            output_file = output_dir / f"{name_prefix}_page_{group[0] + 1:03d}.pdf"
+        else:
+            output_file = (
+                output_dir / f"{name_prefix}_pages_{group[0] + 1:03d}-{group[-1] + 1:03d}.pdf"
+            )
         _atomic_write_pdf(writer, output_file)
         written_files.append(output_file)
 
@@ -481,6 +512,23 @@ def batch_reorder_pdfs(
     return _parallel_process(files, _process, workers, should_cancel)
 
 
+def _combine_selected_pages(
+    input_files: list[Path],
+    output_file: Path,
+    pages: str | None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> None:
+    """Write the chosen pages of every input PDF into one output PDF, in order."""
+    writer = PdfWriter()
+    for input_file in input_files:
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled("Operation cancelled.")
+        reader = PdfReader(str(input_file))
+        for page_index in _selected_page_indexes(reader, pages):
+            writer.add_page(reader.pages[page_index])
+    _atomic_write_pdf(writer, output_file)
+
+
 def batch_split_pdfs(
     input_dir: Path,
     output_dir: Path,
@@ -489,17 +537,73 @@ def batch_split_pdfs(
     pattern: str,
     workers: int | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    mode: str = EXPORT_PER_PAGE,
+    chunk_size: int | None = None,
 ) -> int:
+    """Export pages from multiple PDF files in a directory.
+
+    Every output lands directly in ``output_dir`` (no per-document subfolders) and page files
+    are named after the PDF they came from, e.g. ``report_page_001.pdf``.
+
+    Args:
+        input_dir: Directory containing input PDF files.
+        output_dir: Directory to write the exported PDF files.
+        pages: Optional page range to export (e.g., "1,3,5-7"); ``None`` exports every page.
+        prefix: Optional filename prefix for the exported page files. With several input PDFs
+            the source name is kept after the prefix, so files cannot overwrite each other.
+        pattern: Glob pattern for file matching.
+        workers: Number of worker threads.
+        should_cancel: Optional cancellation check, polled between files.
+        mode: How to split the pages: :data:`~pdfeditor.core.EXPORT_SINGLE` writes one PDF per
+            input file, :data:`~pdfeditor.core.EXPORT_PER_PAGE` (the default) one PDF per page,
+            :data:`~pdfeditor.core.EXPORT_CHUNKED` one PDF per group of ``chunk_size`` pages,
+            and :data:`~pdfeditor.core.EXPORT_COMBINED` a single PDF holding the chosen pages
+            of every matching file.
+        chunk_size: Pages per exported file in ``EXPORT_CHUNKED`` mode.
+
+    Returns:
+        Total number of created PDF files.
+
+    Raises:
+        ValueError: If ``mode`` is not one of :data:`~pdfeditor.core.EXPORT_MODES`.
+    """
+    if mode not in EXPORT_MODES:
+        raise ValueError(f"Unknown export mode: {mode!r}")
+
+    logger.info(f"Batch exporting pages from PDFs in {input_dir} ({mode})")
     files = _collect_input_files(input_dir, pattern)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if mode == EXPORT_COMBINED:
+        if not files:
+            return 0
+        name = (prefix or "").strip() or "combined"
+        _combine_selected_pages(files, output_dir / f"{name}_selected.pdf", pages, should_cancel)
+        logger.info("Batch export complete: created 1 file")
+        return 1
+
+    # A prefix names the page files on its own, but then every input PDF would produce the
+    # same names in the shared output folder, so the source name is kept as well.
+    tag_sources = bool(prefix) and len(files) > 1
 
     def _process(input_file: Path) -> int:
-        nested_output_dir = output_dir / input_file.stem
-        nested_output_dir.mkdir(parents=True, exist_ok=True)
-        name_prefix = prefix if prefix else input_file.stem
-        written_files = split_pdf(input_file, nested_output_dir, pages, name_prefix)
+        if mode == EXPORT_SINGLE:
+            output_file = output_dir / f"{input_file.stem}_selected.pdf"
+            extract_pages(input_file, output_file, pages)
+            return 1
+
+        name_prefix = f"{prefix}_{input_file.stem}" if tag_sources else prefix or input_file.stem
+        written_files = split_pdf(
+            input_file,
+            output_dir,
+            pages,
+            name_prefix,
+            chunk_size if mode == EXPORT_CHUNKED else None,
+        )
         return len(written_files)
 
     counts = _parallel_process(files, _process, workers, should_cancel)
+    logger.info(f"Batch export complete: created {sum(counts)} files")
     return sum(counts)
 
 

@@ -11,10 +11,8 @@ from PySide6.QtCore import QSettings, Qt, QThread, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,30 +34,39 @@ from PySide6.QtWidgets import (
 
 from ..core import (
     DEFAULT_EXCEL_PAPER_SIZE,
+    DEFAULT_EXCEL_PATTERN,
     DEFAULT_GLOB_PATTERN,
     DEFAULT_WATERMARK_FONT_SIZE,
     DEFAULT_WATERMARK_OPACITY,
+    DEFAULT_WORD_PATTERN,
     DEFAULT_WORKERS,
     EXCEL_PAPER_SIZES,
     MAX_WORKERS,
     MIN_WORKERS,
-    OFFICE_ACTIONS,
     OUTPUT_DIR_ACTIONS,
+    batch_excel_to_pdf,
+    batch_pdf_to_text,
+    batch_word_to_pdf,
     combine_pdfs,
+    excel_to_pdf,
     images_to_pdf,
     pdf_to_text,
     print_pdf,
+    word_to_pdf,
 )
 from .organizer import PageOrganizerWidget
 from .theme import apply_theme
 from .widgets import (
+    ConversionPanel,
+    ExportModeSelector,
     OrderedFileList,
     _directory_row,
     _existing_dir_from_input,
     _existing_file_from_input,
-    _file_row,
+    _link_default_output,
     _output_dir_from_input,
     _output_file_from_input,
+    _row_widget,
     _save_row,
 )
 from .workers import BatchWorker, SingleOpWorker
@@ -69,6 +76,9 @@ logger = logging.getLogger(__name__)
 #: The "Single PDF Editing" panel (the page organizer) is first in the sidebar.
 _SINGLE_PDF_ROW = 0
 
+#: Minimum height of the Images→PDF list, so a conversion pane's list is never cramped.
+_MIN_CONVERT_LIST_HEIGHT = 280
+
 
 def _scrollable(widget: QWidget) -> QScrollArea:
     """Wrap a tab's content so tall panels stay scrollable."""
@@ -76,6 +86,26 @@ def _scrollable(widget: QWidget) -> QScrollArea:
     area.setWidgetResizable(True)
     area.setWidget(widget)
     return area
+
+
+def _image_split_targets(inputs: list[Path], output_dir: Path) -> list[tuple[Path, Path]]:
+    """Where each image goes when every image becomes its own PDF.
+
+    ``photo.png`` next to ``photo.jpg`` would both become ``photo.pdf``, so a clash is reported
+    rather than letting one silently overwrite the other.
+    """
+    pairs = [(source, output_dir / f"{source.stem}.pdf") for source in inputs]
+    names = [target.name for _source, target in pairs]
+    clashes = sorted({name for name in names if names.count(name) > 1})
+    if clashes:
+        raise ValueError(f"Two images would become the same file: {', '.join(clashes)}")
+    return pairs
+
+
+def _print_in_order(paths: list[Path]) -> None:
+    """Send each PDF to the printer, in the order the user arranged them."""
+    for path in paths:
+        print_pdf(path)
 
 
 class MainWindow(QMainWindow):
@@ -118,9 +148,9 @@ class MainWindow(QMainWindow):
         # The organizer fills its page and scrolls internally, so it is not wrapped.
         panels: list[tuple[str, QWidget, bool]] = [
             ("Single PDF Editing", self._build_single_pdf_panel(), False),
-            ("Merge / Combine", self._build_combine_tab(), True),
+            ("Bulk PDF Editing", self._build_batch_tab(), True),
+            ("Merge", self._build_combine_tab(), True),
             ("Convert", self._build_convert_tab(), True),
-            ("Batch", self._build_batch_tab(), True),
             ("Print", self._build_print_tab(), True),
         ]
 
@@ -156,12 +186,6 @@ class MainWindow(QMainWindow):
 
         # Menu bar with mnemonics and common shortcuts.
         file_menu = self.menuBar().addMenu("&File")
-        open_action = file_menu.addAction("&Open PDF...")
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.open_pdf)
-        organize_action = file_menu.addAction("&Organize Pages...")
-        organize_action.setShortcut("Ctrl+Shift+O")
-        organize_action.triggered.connect(self.open_page_organizer)
         quit_action = file_menu.addAction("&Quit")
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
@@ -203,52 +227,51 @@ class MainWindow(QMainWindow):
         self.single_pdf_panel.close_document()
         super().closeEvent(event)
 
-    def open_pdf(self) -> None:
-        """Ask for a PDF and open it in the Single PDF Editing panel."""
-        file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF Files (*.pdf)")
-        if file_name:
-            self.open_document(file_name)
-
     def open_document(self, path: str) -> None:
         """Show the Single PDF Editing panel and open ``path`` in it.
 
-        Used by File → Open PDF, and by dropping a PDF onto the window.
+        Used when a PDF is dropped onto the window; the panel's own "PDF to edit" row is the
+        file picker.
         """
         self.panel_list.setCurrentRow(_SINGLE_PDF_ROW)
         self.single_pdf_panel.load(path)
-
-    def open_page_organizer(self) -> None:
-        """Open the organizer in its own window, on the current document when there is one.
-
-        The Single PDF Editing panel embeds the very same widget; this is a convenience for
-        editing a different file without disturbing the panel.
-        """
-        from .organizer import PageOrganizerDialog
-
-        current = self.single_pdf_panel.file_edit.text().strip()
-        dialog = PageOrganizerDialog(current or None, self)
-        dialog.exec()
-        saved = dialog.saved_path()
-        if saved:
-            self.status.showMessage(f"Saved organized PDF: {saved}")
 
     def _on_organized(self, path: str) -> None:
         """Report an organizer Save As in the shared status bar."""
         self.status.showMessage(f"Saved organized PDF: {path}")
 
+    @staticmethod
+    def _dropped_pdf(event) -> Path | None:
+        """The first dropped local file that is a PDF, or ``None`` when there is none.
+
+        Drag-and-drop only ever opens one PDF: a spreadsheet or a folder dropped on the window
+        used to be handed to the organizer, which then failed deep inside pypdf.
+        """
+        for url in event.mimeData().urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.is_file() and path.suffix.lower() == ".pdf":
+                return path
+        return None
+
     def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
+        """Accept a dropped PDF, and refuse anything else without a doomed open attempt."""
+        if self._dropped_pdf(event) is None:
+            if event.mimeData().hasUrls():
+                # Said once per drag (drag-move events are left alone) rather than silently.
+                self.status.showMessage("Only PDF files can be dropped here to open them.", 8000)
+            event.ignore()
+            return
+        event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
-        urls = [url for url in event.mimeData().urls() if url.isLocalFile()]
-        if urls:
-            self.open_document(urls[0].toLocalFile())
-            event.acceptProposedAction()
-        else:
-            super().dropEvent(event)
+        dropped = self._dropped_pdf(event)
+        if dropped is None:
+            event.ignore()
+            return
+        self.open_document(str(dropped))
+        event.acceptProposedAction()
 
     def _open_current_folder(self) -> None:
         """Open the folder of the PDF the Single PDF Editing panel has loaded."""
@@ -292,8 +315,10 @@ class MainWindow(QMainWindow):
             "Output PDF",
             "Save As",
             filter_text="PDF Files (*.pdf)",
-            suffix="_combined",
         )
+        # Several inputs have no single "source" field, so the default output follows the
+        # first file in the list (and stops following once a path of the user's own is there).
+        _link_default_output(self.combine_output, self.combine_inputs, "_combined")
 
         combine_button = QPushButton("Merge PDFs")
         combine_button.clicked.connect(self.run_combine)
@@ -304,60 +329,129 @@ class MainWindow(QMainWindow):
         return tab
 
     def _build_convert_tab(self) -> QWidget:
+        """One conversion at a time, picked from the dropdown.
+
+        Stacking all four conversions used to squeeze each of them (and left the image list far
+        too short); the chosen pane now owns the whole panel.
+        """
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(12)
 
-        images_box = QGroupBox("Images to PDF")
-        images_form = QFormLayout(images_box)
+        self.convert_kind = QComboBox()
+        self.convert_kind.addItem("Images to PDF", "images-to-pdf")
+        self.convert_kind.addItem("PDF to Text", "pdf-to-text")
+        self.convert_kind.addItem("Word to PDF", "word-to-pdf")
+        self.convert_kind.addItem("Excel to PDF", "excel-to-pdf")
 
+        # Each panel below runs on a single file, or on a whole folder of them.
+        self.text_conversion = ConversionPanel(
+            "PDF to Text",
+            input_label="Input PDF",
+            input_filter="PDF Files (*.pdf)",
+            pattern=DEFAULT_GLOB_PATTERN,
+            button_text="Extract Text",
+            output_label="Output Text",
+            output_filter="Text Files (*.txt)",
+            output_extension=".txt",
+            with_workers=True,
+        )
+        self.text_conversion.run_requested.connect(self.run_pdf_to_text)
+
+        self.word_conversion = ConversionPanel(
+            "Word to PDF",
+            input_label="Input Word",
+            input_filter="Word Files (*.docx *.doc)",
+            pattern=DEFAULT_WORD_PATTERN,
+            button_text="Convert to PDF",
+            output_suffix="_converted",
+            with_continue_on_error=True,
+        )
+        self.word_conversion.run_requested.connect(self.run_word_to_pdf)
+
+        self.excel_paper_size = QComboBox()
+        for paper_name in EXCEL_PAPER_SIZES:
+            self.excel_paper_size.addItem(paper_name, paper_name)
+        self.excel_paper_size.setCurrentText(DEFAULT_EXCEL_PAPER_SIZE)
+        self.excel_conversion = ConversionPanel(
+            "Excel to PDF",
+            input_label="Input Excel",
+            input_filter="Excel Files (*.xlsx *.xls *.xlsm)",
+            pattern=DEFAULT_EXCEL_PATTERN,
+            button_text="Convert to PDF",
+            output_suffix="_converted",
+            with_continue_on_error=True,
+        )
+        self.excel_conversion.add_option("Paper Size", self.excel_paper_size)
+        self.excel_conversion.run_requested.connect(self.run_excel_to_pdf)
+
+        # The combo and the stack are filled in the same order, so the index is the choice.
+        self.convert_stack = QStackedWidget()
+        self.convert_stack.addWidget(self._build_images_pane())
+        self.convert_stack.addWidget(self.text_conversion)
+        self.convert_stack.addWidget(self.word_conversion)
+        self.convert_stack.addWidget(self.excel_conversion)
+        self.convert_kind.currentIndexChanged.connect(self.convert_stack.setCurrentIndex)
+
+        selector = QFormLayout()
+        selector.addRow("Conversion", self.convert_kind)
+        layout.addLayout(selector)
+        layout.addWidget(self.convert_stack, stretch=1)
+        return tab
+
+    def _build_images_pane(self) -> QWidget:
+        """The Images to PDF pane: an ordered list of images, then where the result goes.
+
+        The list is given the pane's spare height (and a roomy minimum), which is the space the
+        dropdown frees up by showing one conversion at a time. "One PDF per image" swaps the
+        output row for a folder to spread them over.
+        """
+        pane = QGroupBox("Images to PDF")
+        pane_layout = QVBoxLayout(pane)
+
+        mode_row = QFormLayout()
+        self.images_mode = QComboBox()
+        self.images_mode.addItem("One PDF for every image", "single")
+        self.images_mode.addItem("One PDF per image", "per-image")
+        mode_row.addRow("Make", self.images_mode)
+        pane_layout.addLayout(mode_row)
+
+        pane_layout.addWidget(QLabel("Input Images (in order)"))
         self.images_inputs = OrderedFileList("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)")
+        self.images_inputs.list.setMinimumHeight(_MIN_CONVERT_LIST_HEIGHT)
+        pane_layout.addWidget(self.images_inputs, stretch=1)
+
+        # One PDF needs a filename; one PDF per image needs a folder.
         img_out_row, self.images_output, _ = _save_row(
             "Output PDF",
             "Save As",
             filter_text="PDF Files (*.pdf)",
         )
+        _link_default_output(self.images_output, self.images_inputs, "")
+        dir_out_row, self.images_output_dir, _ = _directory_row("Output Folder", "Select Folder")
+
+        self.images_outputs = QStackedWidget()
+        self.images_outputs.addWidget(_row_widget(img_out_row))
+        self.images_outputs.addWidget(_row_widget(dir_out_row))
+        pane_layout.addWidget(self.images_outputs)
+        # The combo and the stack are filled in the same order, so the index is the choice.
+        self.images_mode.currentIndexChanged.connect(self.images_outputs.setCurrentIndex)
 
         images_button = QPushButton("Create PDF")
         images_button.clicked.connect(self.run_images_to_pdf)
-
-        images_form.addRow("Input Images (in order)", self.images_inputs)
-        images_form.addRow(img_out_row)
-        images_form.addRow(images_button)
-
-        text_box = QGroupBox("PDF to Text")
-        text_form = QFormLayout(text_box)
-
-        text_in_row, self.text_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
-        text_out_row, self.text_output, _ = _save_row(
-            "Output Text",
-            "Save As",
-            filter_text="Text Files (*.txt)",
-            source_edit=self.text_input,
-            extension=".txt",
-        )
-
-        text_button = QPushButton("Extract Text")
-        text_button.clicked.connect(self.run_pdf_to_text)
-
-        text_form.addRow(text_in_row)
-        text_form.addRow(text_out_row)
-        text_form.addRow(text_button)
-
-        layout.addWidget(images_box)
-        layout.addWidget(text_box)
-        layout.addStretch(1)
-        return tab
+        pane_layout.addWidget(images_button)
+        return pane
 
     def _build_print_tab(self) -> QWidget:
         tab = QWidget()
         form = QFormLayout(tab)
 
-        in_row, self.print_input, _ = _file_row("Input PDF", "Browse", filter_text="PDF Files (*.pdf)")
+        # The same ordered list Merge uses, so the print order can be arranged beforehand.
+        self.print_inputs = OrderedFileList("PDF Files (*.pdf)")
         print_button = QPushButton("Print")
         print_button.clicked.connect(self.run_print)
 
-        form.addRow(in_row)
+        form.addRow("Input PDFs (in order)", self.print_inputs)
         form.addRow(print_button)
         return tab
 
@@ -366,7 +460,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.setSpacing(12)
 
-        batch_box = QGroupBox("Batch PDF Operations")
+        batch_box = QGroupBox("Bulk PDF Operations")
         form = QFormLayout(batch_box)
 
         # Action selector
@@ -375,11 +469,7 @@ class MainWindow(QMainWindow):
         self.batch_action.addItem("Watermark", "watermark")
         self.batch_action.addItem("Delete Pages", "delete-pages")
         self.batch_action.addItem("Reorder", "reorder")
-        self.batch_action.addItem("Split", "split")
-        self.batch_action.addItem("PDF to Text", "pdf-to-text")
-        self.batch_action.addItem("Word to PDF", "word-to-pdf")
-        self.batch_action.addItem("Excel to PDF", "excel-to-pdf")
-        self.batch_action.addItem("Print", "print")
+        self.batch_action.addItem("Export Pages", "split")
 
         # Common fields (always shown)
         in_row, self.batch_input_dir, _ = _directory_row("Input Folder", "Select Folder")
@@ -396,9 +486,6 @@ class MainWindow(QMainWindow):
 
         self.batch_count_label = QLabel("")
         self.batch_count_label.setStyleSheet("color: #1a73e8;")
-
-        self.batch_continue_on_error = QCheckBox("Continue on error (Office conversions)")
-        self.batch_continue_on_error.setChecked(True)
 
         # Action-specific fields using QStackedWidget
         self.batch_action_stacked = QStackedWidget()
@@ -459,53 +546,24 @@ class MainWindow(QMainWindow):
         reorder_layout.addRow("Order", self.batch_order)
         self.batch_action_stacked.addWidget(reorder_widget)
         
-        # Split widget
-        split_widget = QWidget()
-        split_layout = QFormLayout(split_widget)
-        self.batch_pages_split = QLineEdit()
-        self.batch_pages_split.setPlaceholderText("Optional: pages to extract, e.g. 1,3,5-7")
-        self.batch_prefix = QLineEdit()
-        self.batch_prefix.setPlaceholderText("Optional filename prefix")
-        split_layout.addRow("Pages", self.batch_pages_split)
-        split_layout.addRow("Split Prefix", self.batch_prefix)
-        self.batch_action_stacked.addWidget(split_widget)
-        
-        # PDF to Text widget (no extra fields)
-        text_widget = QWidget()
-        text_layout = QVBoxLayout(text_widget)
-        text_layout.addWidget(QLabel("No additional options"))
-        text_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.batch_action_stacked.addWidget(text_widget)
-        
-        # Word to PDF widget (no extra fields)
-        word_widget = QWidget()
-        word_layout = QVBoxLayout(word_widget)
-        word_layout.addWidget(QLabel("No additional options"))
-        word_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.batch_action_stacked.addWidget(word_widget)
-        
-        # Excel to PDF widget (with paper size option)
-        excel_widget = QWidget()
-        excel_layout = QFormLayout(excel_widget)
-        self.batch_excel_paper_size = QComboBox()
-        for paper_name in EXCEL_PAPER_SIZES.keys():
-            self.batch_excel_paper_size.addItem(paper_name, paper_name)
-        # Set default to A4
-        default_index = self.batch_excel_paper_size.findText(DEFAULT_EXCEL_PAPER_SIZE)
-        if default_index >= 0:
-            self.batch_excel_paper_size.setCurrentIndex(default_index)
-        excel_layout.addRow("Paper Size", self.batch_excel_paper_size)
-        self.batch_action_stacked.addWidget(excel_widget)
-        
-        # Print widget (no extra fields)
-        print_widget = QWidget()
-        print_layout = QVBoxLayout(print_widget)
-        print_layout.addWidget(QLabel("No additional options"))
-        print_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.batch_action_stacked.addWidget(print_widget)
+        # Export pages widget — the same modes the Single PDF Editing panel offers, plus
+        # combining every input PDF into one file (which only a folder export can do).
+        export_widget = QWidget()
+        export_layout = QFormLayout(export_widget)
+        self.batch_export_mode = ExportModeSelector(with_combined=True)
+        self.batch_export_pages = QLineEdit()
+        self.batch_export_pages.setPlaceholderText("Optional: pages to export, e.g. 1,3,5-7")
+        self.batch_export_prefix = QLineEdit()
+        self.batch_export_prefix.setPlaceholderText("Optional filename prefix")
+        export_layout.addRow("Export As", self.batch_export_mode)
+        export_layout.addRow("Pages", self.batch_export_pages)
+        export_layout.addRow("Prefix", self.batch_export_prefix)
+        self.batch_action_stacked.addWidget(export_widget)
+        self.batch_export_mode.mode_changed.connect(self._on_batch_export_mode_changed)
+        self._on_batch_export_mode_changed(self.batch_export_mode.mode())
 
         # Run button and status
-        self.run_batch_button = QPushButton("Run Batch Operation")
+        self.run_batch_button = QPushButton("Run Bulk Operation")
         self.run_batch_button.clicked.connect(self.run_batch_operation)
         self.dry_run_button = QPushButton("Dry Run (preview matching files)")
         self.dry_run_button.clicked.connect(self.run_batch_dry_run)
@@ -517,7 +575,7 @@ class MainWindow(QMainWindow):
 
         self.batch_log = QPlainTextEdit()
         self.batch_log.setReadOnly(True)
-        self.batch_log.setPlaceholderText("Batch progress and errors will appear here.")
+        self.batch_log.setPlaceholderText("Bulk progress and errors will appear here.")
         self.batch_log.document().setMaximumBlockCount(2000)
 
         # Connect action change and the live file-count preview
@@ -532,7 +590,6 @@ class MainWindow(QMainWindow):
         form.addRow("Pattern", self.batch_pattern)
         form.addRow("", self.batch_count_label)
         form.addRow("Workers", self.batch_workers)
-        form.addRow(self.batch_continue_on_error)
         form.addRow("Options", self.batch_action_stacked)
         form.addRow(self.run_batch_button)
         form.addRow(self.dry_run_button)
@@ -566,34 +623,34 @@ class MainWindow(QMainWindow):
         self.batch_count_label.setText(f"{count} file(s) match '{pattern}'")
 
     def _on_batch_action_changed(self) -> None:
-        """Update displayed fields based on selected batch action."""
+        """Update displayed fields based on selected bulk action."""
         action = self.batch_action.currentData()
-        
+
         # Stack pages are added in the same order as the combo items (after the leading
         # "empty" page), so the index is derived rather than duplicated in a table.
-        
         self.batch_action_stacked.setCurrentIndex(self.batch_action.currentIndex() + 1)
-        
-        # Update pattern based on action
-        if action == "word-to-pdf":
-            self.batch_pattern.setText("*.docx")
-            self.batch_pattern.setToolTip("Glob pattern for Word files")
-        elif action == "excel-to-pdf":
-            self.batch_pattern.setText("*.xlsx")
-            self.batch_pattern.setToolTip("Glob pattern for Excel files")
-        else:
-            self.batch_pattern.setText(DEFAULT_GLOB_PATTERN)
-            self.batch_pattern.setToolTip("Glob pattern, supports forms like *.pdf or **/*.pdf")
-        
-        # Update output directory requirement
+
+        # Every bulk action works on PDFs and writes its results into the output folder.
         self.batch_output_dir.setEnabled(action in OUTPUT_DIR_ACTIONS)
 
-        # Handle Office-specific settings
-        office_action = action in OFFICE_ACTIONS
-        if office_action and self.batch_workers.value() != 1:
-            self.batch_workers.setValue(1)
-        self.batch_workers.setEnabled(not office_action)
-        self.batch_continue_on_error.setEnabled(office_action)
+    def _on_batch_export_mode_changed(self, mode: str) -> None:
+        """Update the fields that only some export modes use.
+
+        A one-PDF-per-file export is named after each input file (like every other bulk
+        operation), so there is no prefix to type; the combined mode uses it to name its one
+        output, and the page-file modes use it to name each page file.
+        """
+        if mode == ExportModeSelector.SINGLE:
+            tooltip = "Not used when one PDF per input file is exported"
+        elif mode == ExportModeSelector.COMBINED:
+            tooltip = "Name of the combined PDF, e.g. report_selected.pdf"
+        else:
+            tooltip = (
+                "Prefix for the exported page files; the source name is kept as well when "
+                "several PDFs are exported together"
+            )
+        self.batch_export_prefix.setEnabled(mode != ExportModeSelector.SINGLE)
+        self.batch_export_prefix.setToolTip(tooltip)
 
     def _show_success(self, message: str) -> None:
         # Non-modal: report in the status bar rather than a blocking dialog.
@@ -611,12 +668,15 @@ class MainWindow(QMainWindow):
             for file_path in inputs:
                 if not file_path.exists() or not file_path.is_file():
                     raise FileNotFoundError(f"Input PDF not found: {file_path}")
+                if not self.combine_inputs.accepts(str(file_path)):
+                    raise ValueError(f"Not a PDF file: {file_path.name}")
             output_file = _output_file_from_input(self.combine_output.text(), "Output PDF")
             self._run_async(lambda: combine_pdfs(inputs, output_file), "Combine complete.")
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
 
     def run_images_to_pdf(self) -> None:
+        """Turn the listed images into one PDF, or into one PDF per image."""
         try:
             inputs = self.images_inputs.paths()
             if not inputs:
@@ -624,26 +684,140 @@ class MainWindow(QMainWindow):
             for file_path in inputs:
                 if not file_path.exists() or not file_path.is_file():
                     raise FileNotFoundError(f"Input image not found: {file_path}")
+                if not self.images_inputs.accepts(str(file_path)):
+                    raise ValueError(f"Not an image file: {file_path.name}")
+
+            if self.images_mode.currentData() == "per-image":
+                targets = _image_split_targets(
+                    inputs,
+                    _output_dir_from_input(self.images_output_dir.text(), "Output Folder"),
+                )
+
+                def write_each() -> str:
+                    for source, target in targets:
+                        images_to_pdf([source], target)
+                    return f"Created {len(targets)} PDF(s), one per image."
+
+                self._run_async(write_each, "Conversion complete.")
+                return
+
             output_file = _output_file_from_input(self.images_output.text(), "Output PDF")
             self._run_async(lambda: images_to_pdf(inputs, output_file), "Conversion complete.")
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
 
     def run_pdf_to_text(self) -> None:
+        """Extract text from one PDF, or from every matching PDF in a folder."""
+        self._run_conversion(
+            self.text_conversion,
+            "Input PDF",
+            "Text extraction complete.",
+            lambda src, dst: pdf_to_text(src, dst),
+            self._bulk_pdf_to_text,
+        )
+
+    def run_word_to_pdf(self) -> None:
+        """Convert one Word document, or a whole folder of them, to PDF."""
+        self._run_conversion(
+            self.word_conversion,
+            "Input Word",
+            "Word to PDF conversion complete.",
+            lambda src, dst: word_to_pdf(src, dst),
+            self._bulk_word_to_pdf,
+        )
+
+    def run_excel_to_pdf(self) -> None:
+        """Convert one Excel workbook, or a whole folder of them, to PDF."""
+        paper_size = self.excel_paper_size.currentText()
+        self._run_conversion(
+            self.excel_conversion,
+            "Input Excel",
+            "Excel to PDF conversion complete.",
+            lambda src, dst: excel_to_pdf(src, dst, paper_size),
+            self._bulk_excel_to_pdf,
+        )
+
+    def _run_conversion(
+        self,
+        panel: ConversionPanel,
+        input_label: str,
+        success_message: str,
+        single: Callable[[Path, Path], None],
+        bulk: Callable[[Path, Path, str, int, bool], str],
+    ) -> None:
+        """Run one Convert-panel action, on a single file or on a whole folder of them."""
         try:
-            input_file = _existing_file_from_input(self.text_input.text(), "Input PDF")
-            output_file = _output_file_from_input(self.text_output.text(), "Output Text")
-            self._run_async(
-                lambda: pdf_to_text(input_file, output_file),
-                "Text extraction complete.",
-            )
+            if panel.is_bulk():
+                input_dir = _existing_dir_from_input(panel.input_dir.text(), "Input Folder")
+                output_dir = _output_dir_from_input(panel.output_dir.text(), "Output Folder")
+                pattern = panel.pattern.text().strip() or DEFAULT_GLOB_PATTERN
+                workers = panel.workers.value()
+                continue_on_error = panel.continue_on_error.isChecked()
+                self._run_async(
+                    lambda: bulk(input_dir, output_dir, pattern, workers, continue_on_error),
+                    success_message,
+                )
+                return
+            input_file = _existing_file_from_input(panel.input_edit.text(), input_label)
+            output_file = _output_file_from_input(panel.output_edit.text(), "Output")
+            self._run_async(lambda: single(input_file, output_file), success_message)
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
 
+    @staticmethod
+    def _bulk_pdf_to_text(
+        input_dir: Path,
+        output_dir: Path,
+        pattern: str,
+        workers: int,
+        _continue_on_error: bool,
+    ) -> str:
+        written = batch_pdf_to_text(input_dir, output_dir, pattern, workers)
+        return f"Extracted text from {len(written)} PDF(s)."
+
+    @staticmethod
+    def _bulk_word_to_pdf(
+        input_dir: Path,
+        output_dir: Path,
+        pattern: str,
+        _workers: int,
+        continue_on_error: bool,
+    ) -> str:
+        # Word/Excel go through COM, which is single-threaded whatever the worker count.
+        written = batch_word_to_pdf(input_dir, output_dir, pattern, 1, None, continue_on_error)
+        return f"Converted {len(written)} Word file(s) to PDF."
+
+    def _bulk_excel_to_pdf(
+        self,
+        input_dir: Path,
+        output_dir: Path,
+        pattern: str,
+        _workers: int,
+        continue_on_error: bool,
+    ) -> str:
+        written = batch_excel_to_pdf(
+            input_dir,
+            output_dir,
+            pattern,
+            1,
+            None,
+            continue_on_error,
+            None,
+            self.excel_paper_size.currentText(),
+        )
+        return f"Converted {len(written)} Excel file(s) to PDF."
+
     def run_print(self) -> None:
         try:
-            input_file = _existing_file_from_input(self.print_input.text(), "Input PDF")
-            self._run_async(lambda: print_pdf(input_file), "Print command submitted.")
+            inputs = self.print_inputs.paths()
+            if not inputs:
+                raise ValueError("At least one input PDF is required.")
+            for file_path in inputs:
+                if not file_path.exists() or not file_path.is_file():
+                    raise FileNotFoundError(f"Input PDF not found: {file_path}")
+                if not self.print_inputs.accepts(str(file_path)):
+                    raise ValueError(f"Not a PDF file: {file_path.name}")
+            self._run_async(lambda: _print_in_order(inputs), "Print command submitted.")
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
 
@@ -671,6 +845,8 @@ class MainWindow(QMainWindow):
             prefix: str | None = None
             opacity: float = DEFAULT_WATERMARK_OPACITY
             paper_size: str | None = None
+            export_mode: str = ExportModeSelector.PER_PAGE
+            chunk_size: int | None = None
 
             if action == "rotate":
                 pages = self.batch_pages_rotate.text().strip() or None
@@ -682,10 +858,14 @@ class MainWindow(QMainWindow):
             elif action == "reorder":
                 order = self.batch_order.text().strip() or None
             elif action == "split":
-                pages = self.batch_pages_split.text().strip() or None
-                prefix = self.batch_prefix.text().strip() or None
-            elif action == "excel-to-pdf":
-                paper_size = self.batch_excel_paper_size.currentText()
+                pages = self.batch_export_pages.text().strip() or None
+                prefix = self.batch_export_prefix.text().strip() or None
+                export_mode = self.batch_export_mode.mode()
+                chunk_size = (
+                    self.batch_export_mode.chunk_size()
+                    if export_mode == ExportModeSelector.CHUNKED
+                    else None
+                )
 
             # Validate action-specific parameters before starting thread
             if action == "watermark" and not text:
@@ -707,13 +887,12 @@ class MainWindow(QMainWindow):
             self.batch_status.setText("Starting...")
             self._set_busy(True)
 
-            effective_workers = 1 if action in OFFICE_ACTIONS else workers
             self.batch_worker = BatchWorker(
                 action,
                 input_dir,
                 output_dir,
                 pattern,
-                effective_workers,
+                workers,
                 self.batch_angle.value(),
                 pages,
                 order,
@@ -721,8 +900,10 @@ class MainWindow(QMainWindow):
                 opacity,
                 self.batch_font_size.value(),
                 prefix,
-                self.batch_continue_on_error.isChecked(),
+                False,
                 paper_size,
+                export_mode=export_mode,
+                chunk_size=chunk_size,
             )
 
             self.batch_thread = QThread(self)

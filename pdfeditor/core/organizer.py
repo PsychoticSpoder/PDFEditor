@@ -179,9 +179,12 @@ class PageOrganizerDocument:
         output_dir: Path | str,
         pages: str | None = None,
         prefix: str | None = None,
+        chunk_size: int | None = None,
     ) -> list[Path]:
-        """Write one PDF per page into ``output_dir``."""
-        return split_pdf(self.path, Path(output_dir).expanduser(), pages, prefix)
+        """Write one PDF per page — or per ``chunk_size`` pages — into ``output_dir``."""
+        return split_pdf(
+            self.path, Path(output_dir).expanduser(), pages, prefix, chunk_size
+        )
 
     def save_as(self, output_file: Path | str) -> Path:
         """Write every pending edit, then copy the result to ``output_file``."""

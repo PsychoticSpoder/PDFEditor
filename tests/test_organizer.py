@@ -92,6 +92,15 @@ def test_organizer_extract_and_split_do_not_change_working_copy(make_pdf, tmp_pa
         assert document.page_count() == 3
         assert document.is_dirty is False
 
+        # A chunked split writes one PDF per group of pages, without touching the copy.
+        chunked = document.split(tmp_path / "chunked", prefix="part", chunk_size=2)
+        assert [path.name for path in chunked] == [
+            "part_pages_001-002.pdf",
+            "part_pages_003-003.pdf",
+        ]
+        assert document.page_count() == 3
+        assert document.is_dirty is False
+
 
 def test_organizer_metadata_round_trip(make_pdf):
     source = make_pdf(pages=2)

@@ -48,6 +48,16 @@ OUTPUT_DIR_ACTIONS = frozenset(
     }
 )
 
+# How an export splits a document's pages: one PDF per input document, one file per page,
+# documents of a fixed number of pages, or everything combined into a single PDF. Defined once
+# here so the core, the CLI and the GUI (both the Export Pages dialog and the Bulk PDF Editing
+# panel) share a single vocabulary.
+EXPORT_COMBINED = "combined"
+EXPORT_SINGLE = "single"
+EXPORT_PER_PAGE = "per-page"
+EXPORT_CHUNKED = "chunked"
+EXPORT_MODES = frozenset({EXPORT_COMBINED, EXPORT_SINGLE, EXPORT_PER_PAGE, EXPORT_CHUNKED})
+
 # Batch actions that drive Microsoft Office via COM (forced to a single worker).
 OFFICE_ACTIONS = frozenset({"word-to-pdf", "excel-to-pdf"})
 

@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from ..core import (
     DEFAULT_EXCEL_PAPER_SIZE,
+    EXPORT_PER_PAGE,
     OperationCancelled,
     batch_delete_pages_pdfs,
     batch_excel_to_pdf,
@@ -46,6 +47,8 @@ class BatchWorker(QObject):
         prefix: str | None,
         continue_on_error: bool,
         paper_size: str | None = None,
+        export_mode: str = EXPORT_PER_PAGE,
+        chunk_size: int | None = None,
     ) -> None:
         super().__init__()
         self.action = action
@@ -62,6 +65,8 @@ class BatchWorker(QObject):
         self.prefix = prefix
         self.continue_on_error = continue_on_error
         self.paper_size = paper_size
+        self.export_mode = export_mode
+        self.chunk_size = chunk_size
         self._cancel_event = threading.Event()
 
     @Slot()
@@ -167,9 +172,11 @@ class BatchWorker(QObject):
                     self.pattern,
                     self.workers,
                     should_cancel=self._should_cancel,
+                    mode=self.export_mode,
+                    chunk_size=self.chunk_size,
                 )
-                self.progress.emit(total, total, "Batch split complete")
-                self.finished.emit(f"Batch split complete. Created {created_count} files.")
+                self.progress.emit(total, total, "Batch export complete")
+                self.finished.emit(f"Batch export complete. Created {created_count} files.")
 
             elif self.action == "pdf-to-text":
                 if self.output_dir is None:

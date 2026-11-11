@@ -4,6 +4,7 @@
 > implemented** — page extract/insert and metadata editing shipped; PDF→image and
 > redaction remain open `[ ]` (deferred). All automated tests pass (`pytest -q`).
 > The GUI usability plan in [Section 10](#10-gui-usability--intuitiveness-planned) is implemented (✅).
+> So is the packaging/release plan in Section 11 (✅).
 
 ## Summary of current state (updated)
 
@@ -14,6 +15,8 @@ The project is now an installable `pdfeditor` package:
 - **`pdfeditor/gui.py`** — PySide6 GUI (`pdf-editor-gui` console script)
 - **`pdf_tool.py`, `pdf_gui.py`** — thin backward-compatibility shims
 - **`tests/`** + **`.github/workflows/ci.yml`** — pytest suite and CI
+- **`packaging/`** + **`.github/workflows/release.yml`** — PyInstaller build of the portable
+  Windows `.exe` and the tag-triggered release workflow
 - **`pyproject.toml`**, **`.gitignore`**
 
 ## Priority overview
@@ -318,6 +321,40 @@ The project is now an installable `pdfeditor` package:
 | `tests/test_gui_smoke.py` | pytest-qt smoke / validation tests |
 | `tests/test_gui_organizer.py` | pytest-qt tests for the page grid and organizer |
 | `tests/test_organizer.py` | Tests for the working-copy organizer session |
+| `packaging/PDFEditor.spec` | PyInstaller recipe for `PDFEditor.exe` and `PDFEditor-console.exe` |
+| `packaging/make_icon.py` | Draws `packaging/PDFEditor.ico`, the icon the exe ships with |
+| `.github/workflows/release.yml` | Tag-triggered build: tests, both exes, bundle check, release |
+
+## 11. Portable Windows build & releases ✅ (done)
+
+- [x] `packaging/PDFEditor.spec` builds the GUI into one self-contained `PDFEditor.exe`, and — with
+      the `PDFEDITOR_CONSOLE` environment variable set — into `PDFEditor-console.exe`, the same
+      program with a console so a user hitting a problem can send the output. Both carry the app's
+      version metadata (generated from `pdfeditor.__version__`, so it cannot drift) and the icon
+      drawn by `packaging/make_icon.py`.
+- [x] The spec collects what PyInstaller cannot see on its own: `win32com`/`pythoncom` are reached
+      through `importlib` in `office.py`, and their DLLs live in `pywin32_system32` rather than
+      inside an importable package; `PySide6.QtPdf` (the page thumbnails) is a hidden import,
+      because a bundle without it still starts and only loses thumbnails.
+- [x] `.github/workflows/release.yml` runs on a `v*` tag: it runs the suite, builds both exes,
+      inspects the archive for `PySide6/QtPdf.pyd`, `Qt6Pdf.dll`, `qwindows.dll` and the pywin32
+      modules, writes `.sha256` checksums and creates the release. A manual run builds the same
+      exes as a workflow artifact and publishes nothing.
+- [x] README §10 documents the download, the local build and what a single-file build does *not*
+      solve: Word/Excel conversion still needs Office or LibreOffice on the machine, the download
+      is unsigned (so SmartScreen warns and the checksums matter), and a one-file build unpacks
+      itself to a temporary folder on first launch.
+
+### 11.1 Risks & mitigations
+
+- **Unsigned download** — SmartScreen warns until the exe earns reputation. Mitigated for now by
+  publishing SHA-256 checksums and saying so in the release notes; a code-signing certificate (or
+  a free OSS service such as SignPath) is the real fix.
+- **Antivirus false positives on one-file bundles** — mitigated by not packing with UPX and by
+  publishing the checksums; a `.zip` of an unpacked build is the fallback if a user is blocked.
+- **Office still required for Word/Excel → PDF** — COM cannot be bundled. The app already says so
+  at the point of use, and the release notes repeat it so it is not reported as a bug.
+
 
 ### 10.5 Risks & mitigations
 

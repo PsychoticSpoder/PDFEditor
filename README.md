@@ -12,7 +12,9 @@ This project provides a command-line app and desktop GUI to:
 - Batch process folders of PDFs
 - Convert Microsoft Word and Excel files to PDF (one file or a whole folder; Windows only)
 
-It also includes a desktop GUI built with PySide6.
+It also includes a desktop GUI built with PySide6. A ready-made Windows `.exe` (no Python
+needed) is attached to every release — see [Releases](../../releases), or §10 to build it
+yourself.
 
 ## 1. Setup
 
@@ -323,3 +325,57 @@ Page ranges use 1-based indexing:
 ## 9. Contributing
 
 [Add contribution guidelines if applicable]
+
+## 10. Portable Windows build (.exe)
+
+Every tagged release carries a ready-made build, so users need no Python at all:
+
+| Asset | What it is |
+|-------|------------|
+| `PDFEditor.exe` | The whole GUI in one file. Download it anywhere and double-click it — no installer, nothing to install first. |
+| `PDFEditor-console.exe` | The same program with a console window, which prints the errors the normal build has nowhere to show. Useful for a bug report. |
+| `*.sha256` | Checksums, so a download can be verified: `certutil -hashfile PDFEditor.exe SHA256`. |
+
+Windows SmartScreen warns about an unknown publisher the first few times, because the downloads
+are not code-signed yet: choose **More info** → **Run anyway**.
+
+Some features still need something installed on the machine:
+
+- **Word/Excel to PDF** uses COM, so Microsoft Office (or LibreOffice, picked up automatically as
+  a fallback) has to be present. Everything else is self-contained.
+- **Print** needs a PDF handler registered with Windows (a browser or reader is enough).
+- The saved window size lives in the registry under `HKCU\Software\pdfeditor`, and a one-file
+  build unpacks itself to a temporary folder on each launch, so the very first start is slower.
+
+### Building it yourself
+
+```powershell
+# One-off: the packaging tool (it is not a runtime dependency of the app)
+.venv\Scripts\python.exe -m pip install "pyinstaller>=6.11"
+
+# The windowed build users download, then the troubleshooting build
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\PDFEditor.spec
+$env:PDFEDITOR_CONSOLE = "1"
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\PDFEditor.spec
+Remove-Item Env:\PDFEDITOR_CONSOLE
+```
+
+Both exes land in `dist\`. What goes into them is defined once, in `packaging/PDFEditor.spec`:
+
+- `PDFEDITOR_CONSOLE` only decides the name and whether a console is attached, so the build people
+  download and the build they report bugs with are the same program.
+- The exe's version metadata is generated from `pdfeditor.__version__`, so it cannot drift.
+- The icon comes from `packaging/PDFEditor.ico`, drawn by `packaging/make_icon.py` if it ever needs
+  a tweak.
+- `win32com` and `pythoncom` are reached through `importlib` in `office.py`, which PyInstaller
+  cannot see, so they are listed as hidden imports and pywin32's DLLs are collected out of
+  `pywin32_system32` by hand.
+- `PySide6.QtPdf` draws the page thumbnails. A bundle without it still starts and only reports
+  "Thumbnails unavailable (QtPdf missing)", so `.github/workflows/release.yml` inspects the built
+  archive for `PySide6/QtPdf.pyd` and `Qt6Pdf.dll` before publishing anything.
+
+Tagging a commit runs that workflow (`git tag v0.1.0` then `git push main v0.1.0`): it runs the
+test suite, builds both exes, verifies the bundle, writes the checksums and creates the release.
+Running the workflow by hand builds the same exes as a workflow artifact without publishing
+anything, which is the safe way to try a change to the spec.
+

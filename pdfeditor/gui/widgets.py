@@ -1063,7 +1063,7 @@ class PageGridWidget(QListWidget):
         # Recompute the flow positions once, deterministically. Relying on the implicit
         # relayout that individual size-hint changes trigger left QListView drawing cells at
         # their previous offsets, so zoomed-in pages overlapped each other.
-        self.doItemsLayout()
+        self.relayout()
 
     def _grid_item_size(self) -> QSize:
         """The placeholder size of a grid cell at the current zoom."""
@@ -1201,6 +1201,16 @@ class PageGridWidget(QListWidget):
         """Rows of the selected items, in document order."""
         return sorted(self.row(item) for item in self.selectedItems())
 
+    def relayout(self) -> None:
+        """Recompute the flow positions from the items' current sizes.
+
+        ``QListView`` caches where it last drew each cell and only recomputes when it decides
+        the layout is dirty, which leaves cells drawn at their *previous* offsets after a move
+        or a size change. Asking for the layout explicitly is what fixes that; it costs a few
+        hundred microseconds for a few hundred cells, so it is safe to run per drag step.
+        """
+        self.doItemsLayout()
+
     def move_rows_to(self, rows: list[int], target: int) -> bool:
         """Move the items at ``rows`` so the block lands at index ``target``.
 
@@ -1223,6 +1233,11 @@ class PageGridWidget(QListWidget):
         self.setCurrentItem(moving[0])
         for offset in range(1, len(moving)):
             self.item(insert_at + offset).setSelected(True)
+        # A moved item keeps its own cell width, so the cached positions no longer describe
+        # the model: without an explicit relayout the cells stay at the offsets of the items
+        # they traded places with, pushing the last cell of a row past the right edge until
+        # something else (a window resize) forced a real relayout.
+        self.relayout()
         return True
 
     def move_row_to(self, row: int, target: int) -> bool:

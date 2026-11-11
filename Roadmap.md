@@ -221,6 +221,24 @@ The project is now an installable `pdfeditor` package:
         render (which, with lazy rendering, used to need a scroll).
   - [x] A drag now commits the new order to the working copy, so Save As writes the order
         that is on screen.
+  - [x] A drop also relayouts the grid (`PageGridWidget.relayout`): a moved item keeps its own
+        cell width, and QListView otherwise keeps drawing the cells at the offsets of the items
+        they traded places with — which left a row's last thumbnails hanging off the right edge
+        until the window was resized.
+  - [x] A reorder no longer blocks the GUI thread: the render in flight is cancelled without
+        waiting for it (the same non-blocking stop the zoom uses) and the new order is written to
+        the working copy on a worker thread (`WorkingCopyWriter`), so the next scroll, zoom or
+        drag finds the file up to date instead of paying for the whole rewrite. The core's edit
+        bookkeeping is locked (`PageOrganizerDocument.has_pending_edits` / `_take_pending`), and
+        a write that fails puts the pending edits back instead of dropping them.
+  - [x] The status line can no longer decide how wide the window is. A word-wrapped `QLabel`
+        reports its widest *unbreakable* run as a minimum width, and the reorder summary
+        ("Reordered to 2,3,4,…,43,1.") is one such run — 1440 px for 43 pages. That minimum
+        propagated into the panel and the window: with a maximized window Qt could not grow it,
+        so the page grid was handed a width far past the right edge and every page landed on one
+        single row of thumbnails (in a resizable window it grew the window instead) until the
+        window was resized. `_never_widen()` ignores the label's horizontal hint, leaving the
+        width to the layout while the height still follows the wrapped text.
   - [x] Extract and Split merged into one **Export Pages…** action: one PDF, one PDF per page,
         or documents of N pages each (`split_pdf(..., chunk_size=N)`), so ten pages can be
         saved as five two-page PDFs.
@@ -276,6 +294,9 @@ The project is now an installable `pdfeditor` package:
   - [x] Images→PDF can make one PDF for every image or one PDF per image (`Make` dropdown); the
         output row swaps between a filename and a folder, and images that would become the same
         file (`photo.png` + `photo.jpg`) are reported instead of overwriting each other.
+  - [x] Images→PDF's first `Make` choice is now **"Combine all images into one PDF"**, not "One
+        PDF for every image" — that could be read as one PDF *per* image, i.e. the other choice.
+        Both options now name their result: combine, or one PDF per image.
   - [x] `ConversionPanel`'s bulk form no longer leaves unused fields floating over the
         "Input Folder" label: a field that is never added to the layout sits in the page's
         top-left corner, on top of the first row's label, so it is hidden instead.

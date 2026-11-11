@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,13 @@ class PageOrganizerDocument:
         self._staging = self._working_dir / f"_staging{self._source.suffix or '.pdf'}"
         self._saved_path: Path | None = None
         self._dirty = False
+        # The GUI writes the working copy from a worker thread, so two locks keep the edit
+        # bookkeeping honest: `_lock` guards the pending edits and the page count (an edit
+        # recorded while a write is running must stay pending, never be lost or block the
+        # caller), and `_write_lock` serializes the file passes themselves — two at once
+        # would fight over the staging file.
+        self._lock = threading.RLock()
+        self._write_lock = threading.Lock()
         shutil.copyfile(self._source, self._working)
         self._source_count = len(PdfReader(str(self._source)).pages)
         # Edits are recorded rather than written straight away, because rewriting the whole
@@ -110,6 +118,17 @@ class PageOrganizerDocument:
         """True when the working copy has edits that have not been saved yet."""
         return self._dirty
 
+    @property
+    def has_pending_edits(self) -> bool:
+        """True while edits are recorded but not yet written to the working copy.
+
+        :attr:`is_dirty` answers a different question — whether there is anything to save —
+        so it stays True after a reorder has been written, until :meth:`save_as` or
+        :meth:`revert`. This is the one to test before writing the pending edits.
+        """
+        with self._lock:
+            return bool(self._pending)
+
     def page_count(self) -> int:
         """Number of pages as edited so far (no file access, so it stays instant)."""
         return self._count
@@ -156,11 +175,17 @@ class PageOrganizerDocument:
         self._record("insert", insert_path, position, pages)
 
     def get_metadata(self) -> dict[str, str]:
-        """Document metadata, keyed without the leading slash (e.g. ``Title``)."""
-        metadata = dict(get_metadata(self._working))
-        for kind, args in self._pending:
-            if kind == "metadata":
-                metadata.update({str(key).lstrip("/"): value for key, value in args[0].items()})
+        """Document metadata, keyed without the leading slash (e.g. ``Title``).
+
+        Reads the working copy and the pending edits as one consistent view: a write in
+        flight has already taken the pending edits off the list, so without the locks this
+        could report the *old* metadata of a file that is about to be replaced.
+        """
+        with self._write_lock, self._lock:
+            metadata = dict(get_metadata(self._working))
+            for kind, args in self._pending:
+                if kind == "metadata":
+                    metadata.update({str(key).lstrip("/"): value for key, value in args[0].items()})
         return metadata
 
     def set_metadata(self, metadata: dict[str, str]) -> None:
@@ -198,73 +223,116 @@ class PageOrganizerDocument:
         return destination
 
     def revert(self) -> None:
-        """Discard every edit by copying the original PDF over the working copy."""
-        self._pending.clear()
-        shutil.copyfile(self._source, self._working)
-        self._count = self._materialized_count = self._source_count
-        self._saved_path = None
-        self._dirty = False
+        """Discard every edit by copying the original PDF over the working copy.
+
+        Both locks are taken, in the same order :meth:`_materialize` takes them, so a write
+        running on a worker thread can neither apply these edits afterwards nor share the
+        working copy with the copy made here.
+        """
+        with self._write_lock, self._lock:
+            self._pending.clear()
+            shutil.copyfile(self._source, self._working)
+            self._count = self._materialized_count = self._source_count
+            self._saved_path = None
+            self._dirty = False
 
     # -- internals -------------------------------------------------------------
     def _record(self, kind: str, *args: Any) -> None:
         """Note an edit and track its effect on the page list, without touching the file."""
-        if kind == "delete":
-            doomed = _parse_page_range(str(args[0]), self._count)
-            if len(doomed) >= self._count:
-                raise ValueError("Delete range removed all pages. Output PDF would be empty.")
-            self._count -= len(doomed)
-        elif kind in ("rotate", "watermark"):
-            _parse_page_range(args[0], self._count)  # validate the spec up front
-        elif kind == "reorder":
-            _parse_page_order(str(args[0]), self._count)
-        elif kind == "insert":
-            insert_file, position, pages = args
-            if not 1 <= int(position) <= self._count + 1:
-                raise ValueError(f"Insert position must be between 1 and {self._count + 1}.")
-            selected = _parse_page_range(pages, len(PdfReader(str(insert_file)).pages))
-            self._count += len(selected)
-        self._pending.append((kind, args))
-        self._saved_path = None
-        self._dirty = True
-
-    def _materialize(self) -> None:
-        """Write every pending edit to the working copy in a single pass."""
-        pending, self._pending = self._pending, []
-        if not pending:
-            return
-        entries: list[_Entry] = [
-            (self._working, index, 0, None) for index in range(self._materialized_count)
-        ]
-        metadata: dict[str, str] = {}
-        for kind, args in pending:
-            if kind == "reorder":
-                order = _parse_page_order(str(args[0]), len(entries))
-                entries = [entries[index] for index in order]
-            elif kind == "rotate":
-                pages, angle = args[0], int(args[1])
-                for index in _parse_page_range(pages, len(entries)):
-                    path, page_index, rotation, stamp = entries[index]
-                    entries[index] = (path, page_index, (rotation + angle) % 360, stamp)
-            elif kind == "delete":
-                doomed = _parse_page_range(str(args[0]), len(entries))
-                entries = [entry for index, entry in enumerate(entries) if index not in doomed]
+        with self._lock:
+            if kind == "delete":
+                doomed = _parse_page_range(str(args[0]), self._count)
+                if len(doomed) >= self._count:
+                    raise ValueError("Delete range removed all pages. Output PDF would be empty.")
+                self._count -= len(doomed)
+            elif kind in ("rotate", "watermark"):
+                _parse_page_range(args[0], self._count)  # validate the spec up front
+            elif kind == "reorder":
+                _parse_page_order(str(args[0]), self._count)
             elif kind == "insert":
                 insert_file, position, pages = args
-                reader = PdfReader(str(insert_file))
-                selected = sorted(_parse_page_range(pages, len(reader.pages)))
-                split_at = min(max(int(position) - 1, 0), len(entries))
-                insert_path = Path(str(insert_file))
-                entries[split_at:split_at] = [(insert_path, index, 0, None) for index in selected]
-            elif kind == "watermark":
-                pages, text, opacity, font_size = args
-                stamp: tuple[str, float, int] = (str(text), float(opacity), int(font_size))
-                for index in _parse_page_range(pages, len(entries)):
-                    path, page_index, rotation, _ = entries[index]
-                    entries[index] = (path, page_index, rotation, stamp)
-            elif kind == "metadata":
-                metadata.update(args[0])
-        self._write(entries, metadata)
-        self._materialized_count = self._count
+                if not 1 <= int(position) <= self._count + 1:
+                    raise ValueError(f"Insert position must be between 1 and {self._count + 1}.")
+                selected = _parse_page_range(pages, len(PdfReader(str(insert_file)).pages))
+                self._count += len(selected)
+            self._pending.append((kind, args))
+            self._saved_path = None
+            self._dirty = True
+
+    def _materialize(self) -> None:
+        """Write every pending edit to the working copy in a single pass.
+
+        :attr:`_write_lock` is held for the whole pass, so a reader that wants the working copy
+        and the pending edits as one view (:meth:`get_metadata`) can never catch the moment
+        between taking the edits off the list and replacing the file. :attr:`_lock` is held only
+        while the snapshot is taken: an edit recorded while the file is being written is left
+        pending for the next pass instead of blocking the caller — for the GUI thread that block
+        would be a frozen window for as long as the rewrite takes.
+        """
+        with self._write_lock:
+            snapshot = self._take_pending()
+            if snapshot is None:
+                return
+            pending, entries, metadata, count_before = snapshot
+            try:
+                self._write(entries, metadata)
+            except Exception:
+                # Put the edits back: dropping them would quietly lose the user's work when the
+                # file cannot be written (locked by another program, or no space left).
+                with self._lock:
+                    self._pending = pending + self._pending
+                    self._materialized_count = count_before
+                raise
+
+    def _take_pending(self) -> tuple[list[_Edit], list[_Entry], dict[str, str], int] | None:
+        """Resolve and claim the pending edits for the next write, or None when there are none.
+
+        Nothing here touches the file: the returned entries are the page list the working copy
+        is about to be built from. Claiming the page count under the same lock keeps an edit
+        recorded at this moment validated against the count it was recorded against.
+        """
+        with self._lock:
+            pending, self._pending = self._pending, []
+            if not pending:
+                return None
+            count_before = self._materialized_count
+            entries: list[_Entry] = [
+                (self._working, index, 0, None) for index in range(count_before)
+            ]
+            metadata: dict[str, str] = {}
+            for kind, args in pending:
+                if kind == "reorder":
+                    order = _parse_page_order(str(args[0]), len(entries))
+                    entries = [entries[index] for index in order]
+                elif kind == "rotate":
+                    pages, angle = args[0], int(args[1])
+                    for index in _parse_page_range(pages, len(entries)):
+                        path, page_index, rotation, stamp = entries[index]
+                        entries[index] = (path, page_index, (rotation + angle) % 360, stamp)
+                elif kind == "delete":
+                    doomed = _parse_page_range(str(args[0]), len(entries))
+                    entries = [entry for index, entry in enumerate(entries) if index not in doomed]
+                elif kind == "insert":
+                    insert_file, position, pages = args
+                    reader = PdfReader(str(insert_file))
+                    selected = sorted(_parse_page_range(pages, len(reader.pages)))
+                    split_at = min(max(int(position) - 1, 0), len(entries))
+                    insert_path = Path(str(insert_file))
+                    entries[split_at:split_at] = [
+                        (insert_path, index, 0, None) for index in selected
+                    ]
+                elif kind == "watermark":
+                    pages, text, opacity, font_size = args
+                    stamp: tuple[str, float, int] = (str(text), float(opacity), int(font_size))
+                    for index in _parse_page_range(pages, len(entries)):
+                        path, page_index, rotation, _ = entries[index]
+                        entries[index] = (path, page_index, rotation, stamp)
+                elif kind == "metadata":
+                    metadata.update(args[0])
+            # The count is claimed here, while the snapshot is still the current state: a
+            # later edit is validated against the new count and stays pending on its own.
+            self._materialized_count = self._count
+            return pending, entries, metadata, count_before
 
     def _write(self, entries: list[_Entry], metadata: dict[str, str]) -> None:
         """Build the output document from the resolved page list in one pass."""

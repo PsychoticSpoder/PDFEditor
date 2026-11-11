@@ -453,7 +453,8 @@ def test_images_pane_switches_between_one_pdf_and_one_pdf_each(qtbot):
     qtbot.addWidget(window)
 
     labels = [window.images_mode.itemText(row) for row in range(window.images_mode.count())]
-    assert labels == ["One PDF for every image", "One PDF per image"]
+    # The first choice names the combined result, so it cannot be read as "one PDF each".
+    assert labels == ["Combine all images into one PDF", "One PDF per image"]
     assert window.images_mode.currentData() == "single"
     assert window.images_output.isVisibleTo(window.images_outputs) is True
     assert window.images_output_dir.isVisibleTo(window.images_outputs) is False

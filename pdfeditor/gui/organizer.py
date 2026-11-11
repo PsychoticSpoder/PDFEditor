@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QImage, QTransform
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QToolButton,
@@ -62,6 +63,80 @@ logger = logging.getLogger(__name__)
 
 #: Documents with more pages than this render lazily (only the pages around the viewport).
 _LAZY_THRESHOLD = 40
+
+#: Writers whose thread has not stopped yet. Qt treats destroying a running QThread as fatal,
+#: so a writer keeps itself alive here until its thread really finishes — what
+#: :data:`pdfeditor.gui.preview._ACTIVE_LOADERS` already does for a render.
+_ACTIVE_WRITERS: set[WorkingCopyWriter] = set()
+
+
+class _WorkingCopyWriter(QObject):
+    """Writes the document's pending edits; lives on a worker thread.
+
+    The write is a whole-document pypdf pass — roughly a millisecond per page, and more for
+    heavy pages — so it is far too slow for the GUI thread, where it used to hang the window
+    for a moment after every reorder. ``previous`` is the render loader that was reading the
+    working copy: it is waited for *here*, on this thread, because Windows cannot replace a
+    file that another reader still has open.
+    """
+
+    written = Signal()
+    failed = Signal(str)
+    done = Signal()
+
+    def __init__(
+        self, document: PageOrganizerDocument, previous: PdfThumbnailLoader | None = None
+    ) -> None:
+        super().__init__()
+        self._document = document
+        self._previous = previous
+
+    @Slot()
+    def run(self) -> None:
+        if self._previous is not None:
+            self._previous.stop()
+        try:
+            # Reading the path is what writes the pending edits.
+            logger.debug("Writing the pending page changes to %s", self._document.path)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Could not write the pending page changes")
+            self.failed.emit(f"Could not write the page changes: {exc}")
+        else:
+            self.written.emit()
+        self.done.emit()
+
+
+class WorkingCopyWriter(QObject):
+    """Owns the thread that writes a document's pending edits (see :meth:`run`)."""
+
+    written = Signal()
+    failed = Signal(str)
+
+    def __init__(
+        self, document: PageOrganizerDocument, previous: PdfThumbnailLoader | None = None
+    ) -> None:
+        super().__init__()
+        self._thread = QThread()
+        self._worker = _WorkingCopyWriter(document, previous)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.written.connect(self.written)
+        self._worker.failed.connect(self.failed)
+        self._worker.done.connect(self._thread.quit)
+        self._thread.finished.connect(self._retire)
+        _ACTIVE_WRITERS.add(self)
+
+    def _retire(self) -> None:
+        """Drop the keep-alive reference once the worker thread has really stopped."""
+        _ACTIVE_WRITERS.discard(self)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Wait for the write to land (teardown, Revert and Save As need the file at rest)."""
+        self._thread.quit()
+        self._thread.wait()
 
 
 class MetadataDialog(QDialog):
@@ -154,6 +229,23 @@ class WatermarkDialog(QDialog):
 def _documents_label(count: int, size: int) -> str:
     """Describe ``count`` exported files of ``size`` pages, e.g. ``"2 documents of 6 pages"``."""
     return f"{count} {'document' if count == 1 else 'documents'} of {size} pages"
+
+
+def _never_widen(label: QLabel) -> None:
+    """Let a word-wrapped label wrap freely instead of dictating the panel's width.
+
+    ``QLabel`` breaks lines at spaces only, and it reports its widest unbreakable run as part of
+    its minimum width. The reorder summary is one such run — ``"Reordered to 2,3,4,…,43,1."`` has
+    no spaces in the page spec — so its minimum grew to the whole line (1440 px for 43 pages).
+    That minimum propagated up through the layout: the panel, then the window, grew with it, and
+    with it the page grid, until every page fitted on a single row of thumbnails.
+
+    Ignoring the horizontal hint leaves the width to the layout. The height still follows the
+    text because the height-for-width flag ``QLabel`` set is kept.
+    """
+    policy = label.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+    label.setSizePolicy(policy)
 
 
 class ExportPagesDialog(QDialog):
@@ -252,6 +344,8 @@ class PageOrganizerWidget(QWidget):
         self.document: PageOrganizerDocument | None = None
         self.confirm_destructive = True
         self._loader: PdfThumbnailLoader | None = None
+        #: The write of the pending edits in flight (see :meth:`_start_writer`), if any.
+        self._writer: WorkingCopyWriter | None = None
         self._cleaned = False
         # Thumbnail cache: one identity per page appearance, so an edit only re-renders the
         # pages that actually changed (and a drag reorder re-renders nothing at all).
@@ -305,6 +399,7 @@ class PageOrganizerWidget(QWidget):
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #5f6368;")
+        _never_widen(hint)
         layout.addWidget(hint)
 
         self.grid = PageGridWidget(grid=True, multi_select=True)
@@ -312,7 +407,7 @@ class PageOrganizerWidget(QWidget):
         self.grid.customContextMenuRequested.connect(self._show_context_menu)
         self.grid.itemSelectionChanged.connect(self._update_status)
         self.grid.rows_moved.connect(self.commit_order)
-        self._layout_timer.timeout.connect(self.grid.doItemsLayout)
+        self._layout_timer.timeout.connect(self.grid.relayout)
         self.grid.verticalScrollBar().valueChanged.connect(self._on_view_moved)
         self.grid.horizontalScrollBar().valueChanged.connect(self._on_view_moved)
         layout.addWidget(self.grid, stretch=1)
@@ -321,6 +416,7 @@ class PageOrganizerWidget(QWidget):
         self.status = QLabel("")
         self.status.setStyleSheet("color: #5f6368;")
         self.status.setWordWrap(True)
+        _never_widen(self.status)
         layout.addWidget(self.status)
 
         if path:
@@ -371,11 +467,13 @@ class PageOrganizerWidget(QWidget):
         return True
 
     def close_document(self) -> None:
-        """Stop the thumbnail thread and drop the temporary working copy."""
+        """Stop the worker threads and drop the temporary working copy."""
         if self._cleaned:
             return
         self._cleaned = True
         self._view_timer.stop()
+        # A write still in flight must land before the file it is writing is deleted.
+        self._stop_writer()
         self._stop_loader()
         if self.document is not None:
             self.document.close()
@@ -593,18 +691,69 @@ class PageOrganizerWidget(QWidget):
         self._loader.start()
         self._requested = set(rows)
 
-    def _stop_loader(self, wait: bool = True) -> None:
-        """Stop the current render.
+    def _stop_writer(self) -> None:
+        """Wait for a background write to land.
+
+        Only the paths that need the working copy at rest wait: teardown, Revert and Save As.
+        Rendering never does — it lets the write finish on its own and renders afterwards,
+        which is what keeps the window responsive while a long document is rewritten.
+        """
+        writer, self._writer = self._writer, None
+        if writer is not None:
+            writer.stop()
+
+    def _start_writer(self, previous: PdfThumbnailLoader | None = None) -> bool:
+        """Write the pending page changes on a worker thread; True when one was started.
+
+        Rendering reads the working copy from disk, so the edits have to be written first —
+        and for a long document that rewrite is far too slow for the GUI thread. Handing it to
+        a worker keeps the window live: the render that wanted the file waits for
+        :meth:`_on_written` instead of the window freezing until the write is done.
+
+        ``previous`` is the render loader that was reading the file before this call: the
+        writer waits for it, so the working copy is never replaced under an open reader.
+        """
+        if self._writer is not None or self.document is None:
+            return False
+        if not self.document.has_pending_edits:
+            return False
+        writer = WorkingCopyWriter(self.document, previous)
+        writer.written.connect(self._on_written)
+        writer.failed.connect(self._on_write_failed)
+        self._writer = writer
+        writer.start()
+        return True
+
+    @Slot()
+    def _on_written(self) -> None:
+        """The working copy is up to date again: render whatever the view still needs."""
+        self._writer = None
+        self._render_needed()
+
+    @Slot(str)
+    def _on_write_failed(self, message: str) -> None:
+        """The write failed: say so, and let the next render or edit try again.
+
+        The writer is dropped either way — it is the "a write is in flight" marker the render
+        path checks, so keeping it would stop every later render from ever starting.
+        """
+        self._writer = None
+        self._set_message(message)
+
+    def _stop_loader(self, wait: bool = True) -> PdfThumbnailLoader | None:
+        """Stop the current render, returning the loader that was stopped.
 
         ``wait=False`` asks the worker to stop without blocking the GUI thread — what a zoom
-        change wants, since waiting here froze the window until the in-flight page finished.
-        Teardown still waits (``wait=True``), because the temporary working copy cannot be
-        deleted while the worker still has the file open on Windows.
+        change and a drag reorder want, since waiting here froze the window until the
+        in-flight page finished. Teardown still waits (``wait=True``), because the temporary
+        working copy cannot be deleted while the worker still has the file open on Windows;
+        a background write waits for the returned loader on its own thread
+        (:class:`_WorkingCopyWriter`), for the same reason.
         """
         loader, self._loader = self._loader, None
         self._requested = set()
         if loader is None:
-            return
+            return None
         # Disconnect first: a render already in flight must not touch our state after we have
         # moved on (its images belong to the old resolution and would overwrite the new ones).
         for signal in (loader.rendered, loader.failed):
@@ -616,6 +765,7 @@ class PageOrganizerWidget(QWidget):
             loader.stop()
         else:
             loader.cancel()
+        return loader
 
     # -- thumbnail zoom --------------------------------------------------------
     def set_thumbnail_scale(self, percent: int) -> None:
@@ -747,7 +897,7 @@ class PageOrganizerWidget(QWidget):
             # The status summary is deliberately left alone here: refreshing it would wipe an
             # operation's message as soon as a (possibly scroll-triggered) render finished.
             self._layout_timer.stop()
-            self.grid.doItemsLayout()
+            self.grid.relayout()
 
     @Slot(str)
     def _set_message(self, message: str) -> None:
@@ -817,8 +967,14 @@ class PageOrganizerWidget(QWidget):
         missing = [row for row in want if self._keys[row] not in self._images]
         if self._loader is not None and set(missing) <= self._requested:
             return  # the render in flight already covers everything the view needs
-        self._stop_loader(wait=False)
-        if missing:
+        if self._writer is not None:
+            return  # a write in flight asks for the render again once it lands
+        previous = self._stop_loader(wait=False)
+        if not missing:
+            return
+        # Rendering reads the working copy from disk, so any pending edit has to be written
+        # first — on a worker thread, which is why this defers the render instead of blocking.
+        if not self._start_writer(previous):
             self._render_rows(missing)
 
     def _evict_far_rows(self, keep: set[int]) -> None:
@@ -932,8 +1088,11 @@ class PageOrganizerWidget(QWidget):
     def commit_order(self) -> None:
         """Persist the grid's order to the working copy (called when a drag ends).
 
-        Reordering only moves pages, so every cached thumbnail stays valid and nothing
-        has to be rendered again.
+        Reordering only moves pages, so every cached thumbnail stays valid and nothing has to
+        be rendered again. The render in flight is stopped without waiting for it — the same
+        non-blocking stop the zoom uses: its images describe the order from before the drag,
+        so they have to be dropped, but waiting for the page it is drawing is what froze the
+        window on a slow document. The new order is then written in the background.
         """
         order = [
             int(self.grid.item(row).data(Qt.ItemDataRole.UserRole))
@@ -945,7 +1104,7 @@ class PageOrganizerWidget(QWidget):
         document = self._require_document()
         if document is None:
             return
-        self._stop_loader()
+        previous = self._stop_loader(wait=False)
         try:
             document.reorder(spec)
         except Exception as exc:  # noqa: BLE001
@@ -958,6 +1117,9 @@ class PageOrganizerWidget(QWidget):
             item = self.grid.item(row)
             item.setText(f"Page {row + 1}")
             item.setData(Qt.ItemDataRole.UserRole, row + 1)
+        # Write it now rather than when the next render asks for the file, so a scroll, a zoom
+        # or the next drag finds the working copy up to date instead of paying the rewrite.
+        self._start_writer(previous)
         self._update_status()
         self._flash_status(f"Reordered to {spec}.")
 
@@ -1120,6 +1282,8 @@ class PageOrganizerWidget(QWidget):
         document = self._require_document()
         if document is None:
             return
+        # A write still running would put the edits back over the reverted file.
+        self._stop_writer()
         self._stop_loader()
         document.revert()
         self.reload()
@@ -1138,6 +1302,8 @@ class PageOrganizerWidget(QWidget):
         )
         if not output:
             return None
+        # Save As copies the working copy, so no background write may be touching it.
+        self._stop_writer()
         try:
             saved = document.save_as(output)
         except Exception as exc:  # noqa: BLE001

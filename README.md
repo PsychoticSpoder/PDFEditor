@@ -174,7 +174,8 @@ The GUI is a list of panels down the left:
 - **Merge**: Merge multiple PDFs
 - **Convert**: Images to PDF, PDF to text and Word/Excel to PDF — one at a time, picked from a
   dropdown so each conversion gets the whole panel — and each one runs on a single file or a
-  whole folder. Images go into one PDF together, or one PDF each
+  whole folder. The Images→PDF pane's `Make` dropdown combines every listed image into one PDF,
+  or writes one PDF per image into a folder
 - **Print**: Print PDFs to default printer
 
 The **Current PDF** bar is gone: the Single PDF Editing panel's own "PDF to edit" row is the

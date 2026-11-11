@@ -404,15 +404,18 @@ class MainWindow(QMainWindow):
         """The Images to PDF pane: an ordered list of images, then where the result goes.
 
         The list is given the pane's spare height (and a roomy minimum), which is the space the
-        dropdown frees up by showing one conversion at a time. "One PDF per image" swaps the
-        output row for a folder to spread them over.
+        dropdown frees up by showing one conversion at a time. The `Make` choice names the
+        result — "Combine all images into one PDF" or "One PDF per image" — and the second one
+        swaps the output row for a folder to spread them over.
         """
         pane = QGroupBox("Images to PDF")
         pane_layout = QVBoxLayout(pane)
 
         mode_row = QFormLayout()
         self.images_mode = QComboBox()
-        self.images_mode.addItem("One PDF for every image", "single")
+        # "Combine ... into one PDF" says what happens; the old "one PDF for every image" could
+        # be read as one PDF *per* image, which is the other choice.
+        self.images_mode.addItem("Combine all images into one PDF", "single")
         self.images_mode.addItem("One PDF per image", "per-image")
         mode_row.addRow("Make", self.images_mode)
         pane_layout.addLayout(mode_row)
@@ -422,7 +425,7 @@ class MainWindow(QMainWindow):
         self.images_inputs.list.setMinimumHeight(_MIN_CONVERT_LIST_HEIGHT)
         pane_layout.addWidget(self.images_inputs, stretch=1)
 
-        # One PDF needs a filename; one PDF per image needs a folder.
+        # One combined PDF needs a filename; one PDF per image needs a folder.
         img_out_row, self.images_output, _ = _save_row(
             "Output PDF",
             "Save As",
@@ -678,7 +681,7 @@ class MainWindow(QMainWindow):
             self._show_error(exc)
 
     def run_images_to_pdf(self) -> None:
-        """Turn the listed images into one PDF, or into one PDF per image."""
+        """Combine the listed images into one PDF, or write one PDF per image."""
         try:
             inputs = self.images_inputs.paths()
             if not inputs:

@@ -6,6 +6,7 @@ Skipped automatically when PySide6/pytest-qt are unavailable, like the other GUI
 from __future__ import annotations
 
 import re
+import time
 
 import pytest
 
@@ -13,9 +14,14 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pytestqt")
 
 from pypdf import PdfReader  # noqa: E402
-from PySide6.QtCore import QSize, QSizeF  # noqa: E402
+from PySide6.QtCore import QObject, QSize, QSizeF, Signal  # noqa: E402
 from PySide6.QtGui import QImage  # noqa: E402
-from PySide6.QtWidgets import QDialog, QListWidgetItem, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QDialog,
+    QListWidgetItem,
+    QMessageBox,
+    QSizePolicy,
+)
 
 from pdfeditor.gui import organizer as org  # noqa: E402
 from pdfeditor.gui.preview import _ThumbnailWorker, qtpdf_available  # noqa: E402
@@ -96,6 +102,35 @@ def test_page_grid_ignores_drops_inside_the_selection(qtbot):
     assert grid.move_rows_to([1], 1) is False
     assert grid.move_rows_to([0], 2) is True
     assert [grid.item(row).text() for row in range(3)] == ["B", "C", "A"]
+
+
+def test_page_grid_reorder_relayouts_the_cells(qtbot, monkeypatch):
+    """Moving a row asks for a relayout, so no cell is left at the offset of the one it traded
+    places with — the stale positions that left a row's last thumbnails hanging off the right
+    edge until something else (a window resize) relaid the grid out."""
+    grid = PageGridWidget(grid=True, multi_select=True)
+    qtbot.addWidget(grid)
+    grid.resize(420, 320)
+    # Cells of different widths, like a document mixing portrait and landscape pages.
+    for row in range(9):
+        item = QListWidgetItem(f"Page {row + 1}")
+        item.setSizeHint(QSize(250 if row % 3 == 0 else 120, 140))
+        grid.addItem(item)
+    grid.show()
+    qtbot.wait(20)
+
+    layouts: list[int] = []
+    original = grid.relayout
+    monkeypatch.setattr(grid, "relayout", lambda: (layouts.append(1), original())[1])
+
+    assert grid.move_rows_to([0], 5) is True
+    assert layouts, "a move has to relayout the grid"
+
+    # The cells read in document order and none of them hangs off the right edge.
+    rects = {row: grid.visualItemRect(grid.item(row)) for row in range(grid.count())}
+    placed = sorted((rect.top(), rect.left(), row) for row, rect in rects.items())
+    assert [row for _, _, row in placed] == list(range(grid.count()))
+    assert max(rect.right() for rect in rects.values()) <= grid.viewport().rect().width()
 
 
 def test_page_grid_zoom_scales_the_thumbnail_box(qtbot):
@@ -547,6 +582,103 @@ def test_organizer_drag_commits_the_new_order(qtbot, make_pdf):
     assert len(widget._images) == 3
     assert all(not widget.grid.item(row).icon().isNull() for row in range(3))
     assert [widget.grid.item(row).text() for row in range(3)] == ["Page 1", "Page 2", "Page 3"]
+
+
+class _SlowLoader(QObject):
+    """A stand-in for a render in flight: stopping it takes a while."""
+
+    rendered = Signal(int, QImage)
+    failed = Signal(str)
+
+    def __init__(self, delay: float = 0.4) -> None:
+        super().__init__()
+        self.delay = delay
+        self.cancelled = False
+        self.stopped = False
+        # A real loader always has these connected, and disconnecting an unconnected signal
+        # makes PySide6 warn — which a test run should not be full of.
+        self.rendered.connect(lambda *_: None)
+        self.failed.connect(lambda *_: None)
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def stop(self) -> None:
+        self.stopped = True
+        time.sleep(self.delay)
+
+
+def test_organizer_reorder_never_waits_for_a_render_in_flight(qtbot, make_pdf):
+    """A drop cancels the render in flight instead of waiting for the page it is drawing.
+
+    That wait is what froze the window on a slow document; it now happens on the writer
+    thread, which needs the working copy to itself before rewriting it.
+    """
+    _needs_qtpdf()
+    widget = _open(make_pdf(pages=3), qtbot)
+    qtbot.waitUntil(lambda: len(widget._images) == 3, timeout=5000)
+
+    loader = _SlowLoader()
+    widget._loader = loader
+    widget._requested = {0}
+
+    assert widget.grid.move_rows_to([0], 2) is True
+    started = time.perf_counter()
+    widget.commit_order()
+    elapsed = time.perf_counter() - started
+
+    # Its images describe the order from before the drag, so it is dropped — not waited for.
+    assert loader.cancelled is True
+    assert elapsed < 0.2
+
+    qtbot.waitUntil(lambda: widget._writer is None, timeout=5000)
+    assert loader.stopped is True
+    assert widget.document.has_pending_edits is False
+    assert _page_numbers(widget.document.path) == [2, 3, 1]
+
+
+def test_organizer_writes_a_reorder_without_rendering_again(qtbot, make_pdf):
+    """The new order reaches the working copy on its own, with no thumbnail asked for.
+
+    Waiting for the next render before writing is what made the drop feel slow: the first
+    scroll or zoom afterwards paid for the whole rewrite.
+    """
+    _needs_qtpdf()
+    widget = _open(make_pdf(pages=3), qtbot)
+    qtbot.waitUntil(lambda: len(widget._images) == 3, timeout=5000)
+
+    renders: list[list[int]] = []
+    widget._render_rows = lambda rows: renders.append(list(rows))
+
+    assert widget.grid.move_rows_to([0], 2) is True
+    widget.commit_order()
+
+    qtbot.waitUntil(lambda: widget._writer is None, timeout=5000)
+    assert _page_numbers(widget.document.path) == [2, 3, 1]
+    # Reordering only moves pages, so every cached thumbnail still shows the right page.
+    assert renders == []
+    assert widget.document.has_pending_edits is False
+
+
+def test_organizer_status_line_never_widens_the_panel(qtbot, make_pdf):
+    """A long reorder summary must not stretch the panel — and with it the page grid.
+
+    The summary is one long token with no spaces to wrap at, so the word-wrapped label reported
+    a minimum width the size of the whole line (1440 px for a 43-page reorder). That minimum grew
+    the window and the grid inside it, leaving every page on a single row of thumbnails running
+    off the right edge of the screen.
+    """
+    _needs_qtpdf()
+    widget = _open(make_pdf(pages=3), qtbot)
+    before = widget.minimumSizeHint().width()
+
+    spec = ",".join(str(page) for page in range(2, 44)) + ",1"
+    widget._flash_status(f"Reordered to {spec}.")
+
+    assert widget.status.text().startswith("Reordered to")
+    assert widget.minimumSizeHint().width() == before
+    # The label wraps to the width it is given instead of asking for its own.
+    assert widget.status.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Ignored
 
 
 def test_export_pages_asks_how_to_split_the_selection(qtbot, make_pdf, tmp_path, monkeypatch):

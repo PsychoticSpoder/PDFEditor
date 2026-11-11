@@ -379,3 +379,7 @@ test suite, builds both exes, verifies the bundle, writes the checksums and crea
 Running the workflow by hand builds the same exes as a workflow artifact without publishing
 anything, which is the safe way to try a change to the spec.
 
+If a release does not appear, the failing step in the run says why. Once that is fixed, publish it
+without moving the tag: **Actions → Release → Run workflow**, and put the tag (`v0.1.0`) in the box.
+The workflow checks that tag out, builds the same exes and creates or updates that release.
+

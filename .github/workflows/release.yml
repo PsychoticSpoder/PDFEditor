@@ -1,12 +1,21 @@
 name: Release
 
 # Tag a commit (`git tag v0.1.0` then `git push main v0.1.0`) to build the portable Windows exes
-# and attach them to a GitHub release. Run the workflow by hand for a dry build: the same exes
-# are uploaded as a workflow artifact and no release is created.
+# and attach them to a GitHub release.
+#
+# Running the workflow by hand is a dry build: the same exes are uploaded as a workflow artifact
+# and no release is created. Name an existing tag there to publish (or re-publish) that tag's
+# release — the tag is then checked out, so the assets always match the code they belong to. That
+# is how a release that failed to publish is finished off without moving the tag.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish a release for (leave empty for a dry build)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -16,6 +25,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A manual run may name any tag; a tag push checks out that tag by itself.
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -37,21 +49,6 @@ jobs:
           $env:PDFEDITOR_CONSOLE = "1"
           python -m PyInstaller --noconfirm --clean packaging/PDFEditor.spec
 
-      - name: Check the bundle really carries QtPdf and pywin32
-        shell: pwsh
-        run: |
-          # A build that lost QtPdf still starts, it just cannot draw page thumbnails, and a
-          # build that lost pywin32 only fails when Word/Excel conversion is used. Both are
-          # silent losses, so the archive is inspected instead of trusted.
-          $listing = ((pyi-archive_viewer -r dist/PDFEditor.exe) -join "`n") -replace '\\+', '/'
-          $required = @(
-            'PySide6/QtPdf.pyd', 'Qt6Pdf.dll', 'qwindows.dll',
-            'win32com', 'pythoncom', 'pywintypes', 'reportlab', 'PIL'
-          )
-          $missing = $required | Where-Object { $listing -notmatch [regex]::Escape($_) }
-          if ($missing) { throw "Missing from the bundle: $($missing -join ', ')" }
-          "Bundle carries: $($required -join ', ')"
-
       - name: Write the checksums
         shell: pwsh
         run: |
@@ -61,7 +58,40 @@ jobs:
             Get-Content "$exe.sha256"
           }
 
+      - name: Check the exes really carry QtPdf and pywin32
+        shell: pwsh
+        run: |
+          # A build that lost QtPdf still starts, it just cannot draw page thumbnails, and a build
+          # that lost pywin32 only fails when Word/Excel conversion is used. Both losses are silent,
+          # so the shipped archives are inspected rather than trusted.
+          #
+          # `pyi-archive_viewer -r` prints a Python repr, where a path separator shows up as a
+          # *doubled* backslash ("PySide6\\QtPdf.pyd"). Matching that text without collapsing runs
+          # of backslashes is exactly what failed against a perfectly good bundle on the v0.1.0 tag
+          # and then skipped the release, so `\\+` is used: it matches one or two.
+          $required = @(
+            'PySide6/QtPdf.pyd',                     # the page thumbnails
+            'Qt6Pdf.dll',
+            'qwindows.dll',                          # the platform plugin Qt cannot start without
+            'pywintypes', 'pythoncom', 'win32com',   # Word/Excel conversion (COM)
+            'reportlab', 'PIL'                       # images to PDF, and the thumbnail pipeline
+          )
+          $missing = @()
+          foreach ($exe in @("dist/PDFEditor.exe", "dist/PDFEditor-console.exe")) {
+            $listing = ((pyi-archive_viewer -r $exe) -join "`n") -replace '\\+', '/'
+            foreach ($needle in $required) {
+              $found = $listing -match [regex]::Escape($needle)
+              "  $(Split-Path $exe -Leaf) carries $needle -> $found"
+              if (-not $found) { $missing += "$(Split-Path $exe -Leaf): $needle" }
+            }
+          }
+          if ($missing) { throw "Missing from the bundle: $($missing -join ', ')" }
+          "Both exes carry: $($required -join ', ')"
+
       - name: Keep the exes as a workflow artifact (dry runs, bug reports)
+        # `always()` on purpose: when a check fails, the exes and their checksums are still worth
+        # having — hunting for a build by hand is what a failed run used to mean.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: PDFEditor-windows-x64
@@ -72,9 +102,16 @@ jobs:
             dist/*.sha256
 
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # A tag push publishes its own release; a manual run publishes only when it was given a tag.
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          # A re-publish refreshes an existing release's assets instead of failing on them.
+          overwrite_files: true
           files: |
             dist/PDFEditor.exe
             dist/PDFEditor-console.exe

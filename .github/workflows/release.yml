@@ -43,7 +43,7 @@ jobs:
           # A build that lost QtPdf still starts, it just cannot draw page thumbnails, and a
           # build that lost pywin32 only fails when Word/Excel conversion is used. Both are
           # silent losses, so the archive is inspected instead of trusted.
-          $listing = ((pyi-archive_viewer -r dist/PDFEditor.exe) -join "`n") -replace '\\', '/'
+          $listing = ((pyi-archive_viewer -r dist/PDFEditor.exe) -join "`n") -replace '\\+', '/'
           $required = @(
             'PySide6/QtPdf.pyd', 'Qt6Pdf.dll', 'qwindows.dll',
             'win32com', 'pythoncom', 'pywintypes', 'reportlab', 'PIL'

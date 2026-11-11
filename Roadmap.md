@@ -355,10 +355,18 @@ The project is now an installable `pdfeditor` package:
       the spec's excludes are the belt to that braces. Both wheels need PySide6 6.12, so the
       project now requires Python 3.10.
 - [x] `packaging/PDFEditor.spec` trims the files the Qt/Pillow/pywin32 hooks collect but the app can
-      never load (`opengl32sw.dll`, Pillow's AVIF codec, Qt's `translations/*.qm`, pywin32's MFC/Tk
-      extras). That is where the download actually shrank: measured with
-      `packaging/report_bundle_size.py`, a 48.9 MB build became 35.2 MB, with 196 bundled entries
-      down to 93, and the exe still starts.
+      never load: `opengl32sw.dll` (Qt's software-OpenGL fallback), `mfc140u.dll` and `win32ui.pyd`
+      (pywin32's MFC layer), pywin32's own `libcrypto-3-x64`/`libssl-3-x64` OpenSSL copies,
+      `qdirect2d.dll`, Pillow's AVIF codec and Tk bridge, Qt's `translations/*.qm`, and the
+      image-format plugins for formats the app never opens. Python's `libcrypto-3.dll` stays,
+      because `_hashlib` and `_ssl` link against it. Measured with `report_bundle_size.py`, a
+      64.5 MB published build became 35.2 MB, and the exe still starts.
+- [x] `pdfeditor/cli.py` never imported `word_to_pdf`/`excel_to_pdf`, so the single-file
+      `word-to-pdf` and `excel-to-pdf` commands raised `NameError`. Found by ruff's F821 while
+      clearing the lint debt, and fixed.
+- [x] `ruff check .` and `black --check .` are clean, so `pre-commit install` now passes and commits
+      no longer need `--no-verify`: `pdfeditor/core/__init__.py` declares `__all__`, and the
+      over-long lines in `analyze_excel.py`, `office.py` and `workers.py` were wrapped.
 
 ### 11.1 Risks & mitigations
 

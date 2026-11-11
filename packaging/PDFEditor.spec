@@ -129,23 +129,41 @@ HIDDEN_IMPORTS = [
 # EXCLUDES removes *Python modules*. The Qt, Pillow and pywin32 hooks also copy plain files that no
 # code path in the app can reach, and dropping those is what actually shrinks the download:
 #   * opengl32sw.dll — Qt's software OpenGL fallback (~7 MB). A widgets app paints with the raster
-#     engine, or through the platform plugin, so OpenGL is never requested and the file is never
-#     loaded.
+#     engine, or through the platform plugin, so OpenGL is never requested and it is never loaded.
+#   * mfc140u.dll and pythonwin/win32ui.pyd — pywin32's MFC layer and the MFC runtime it drags in
+#     (~3 MB). office.py only uses win32com.client.
+#   * libcrypto-3-x64.dll and libssl-3-x64.dll — the OpenSSL copies pywin32 ships for its own
+#     certificate helpers (~2.6 MB), which the app never calls. Python's own libcrypto-3.dll stays:
+#     _hashlib and _ssl are linked against it.
 #   * PIL/_avif*.pyd — Pillow's AVIF codec (~4 MB). Images to PDF goes through Pillow, but AVIF is
 #     not a format the tool offers; the codecs for PNG, JPEG, GIF and WebP are kept.
+#   * PIL/_imagingtk*.pyd — Pillow's Tk bridge; tkinter is excluded above.
 #   * PySide6/translations/*.qm — Qt's own UI translations. The app installs no QTranslator and its
 #     dialogs are the native Windows ones, so no .qm file is ever opened.
-#   * pythonwin/win32ui.pyd and PIL/_imagingtk*.pyd — pywin32's MFC layer and Pillow's Tk bridge;
-#     office.py only uses win32com.client, and tkinter is excluded above.
+#   * qdirect2d.dll — an alternative platform plugin, reached only by `-platform direct2d`.
 #: Collected file *names* (not paths) that the app can never load.
-TRIMMED_FILES = ("opengl32sw.dll", "win32ui.pyd")
+TRIMMED_FILES = (
+    "libcrypto-3-x64.dll",
+    "libssl-3-x64.dll",
+    "mfc140u.dll",
+    "opengl32sw.dll",
+    "qdirect2d.dll",
+    "win32ui.pyd",
+)
+
+# Qt image-format plugins the app never opens: it reads no image files through Qt at all (the page
+# thumbnails come from QtPdf, and Images to PDF goes through Pillow). qico, qjpeg, qgif, qsvg and
+# qpdf are kept, so icons and the common formats still load.
+TRIMMED_IMAGE_FORMATS = ("qicns.dll", "qtga.dll", "qtiff.dll", "qwbmp.dll", "qwebp.dll")
 
 
 def _is_trimmed(dest: str) -> bool:
-    """True for a collected file the app can never load (see TRIMMED_FILES above)."""
+    """True for a collected file the app can never load (see the lists above)."""
     name = dest.replace("\\", "/").lower()
     base = name.rsplit("/", 1)[-1]
     if base in TRIMMED_FILES:
+        return True
+    if name.startswith("pyside6/plugins/imageformats/") and base in TRIMMED_IMAGE_FORMATS:
         return True
     if name.startswith("pyside6/translations/"):
         return True

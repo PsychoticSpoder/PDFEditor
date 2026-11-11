@@ -323,6 +323,7 @@ The project is now an installable `pdfeditor` package:
 | `tests/test_organizer.py` | Tests for the working-copy organizer session |
 | `packaging/PDFEditor.spec` | PyInstaller recipe for `PDFEditor.exe` and `PDFEditor-console.exe` |
 | `packaging/make_icon.py` | Draws `packaging/PDFEditor.ico`, the icon the exe ships with |
+| `packaging/report_bundle_size.py` | Prints where a built exe's size goes (Qt, Python, reportlab …) |
 | `.github/workflows/release.yml` | Tag-triggered build: tests, both exes, bundle check, release |
 
 ## 11. Portable Windows build & releases ✅ (done)
@@ -344,6 +345,20 @@ The project is now an installable `pdfeditor` package:
       solve: Word/Excel conversion still needs Office or LibreOffice on the machine, the download
       is unsigned (so SmartScreen warns and the checksums matter), and a one-file build unpacks
       itself to a temporary folder on first launch.
+- [x] `packaging/report_bundle_size.py` prints the size breakdown of a built exe (read with
+      PyInstaller's own archive reader: Qt 6, the Python runtime, reportlab, Pillow, pywin32 …), and
+      the release workflow appends it to the run summary, so the ~50 MB is explained by the artifact
+      instead of assumed.
+- [x] The GUI depends on `PySide6-Essentials` + `PySide6-Pdf` instead of the `PySide6`
+      metapackage, which would also install PySide6-Addons (33 modules the app cannot reach) and
+      PySide6-WebEngine. `PySide6-Pdf` is what carries `QtPdf`, so the thumbnails keep working, and
+      the spec's excludes are the belt to that braces. Both wheels need PySide6 6.12, so the
+      project now requires Python 3.10.
+- [x] `packaging/PDFEditor.spec` trims the files the Qt/Pillow/pywin32 hooks collect but the app can
+      never load (`opengl32sw.dll`, Pillow's AVIF codec, Qt's `translations/*.qm`, pywin32's MFC/Tk
+      extras). That is where the download actually shrank: measured with
+      `packaging/report_bundle_size.py`, a 48.9 MB build became 35.2 MB, with 196 bundled entries
+      down to 93, and the exe still starts.
 
 ### 11.1 Risks & mitigations
 
@@ -380,4 +395,3 @@ The project is now an installable `pdfeditor` package:
 - PDF→image conversion (requires a rendering dependency such as PyMuPDF or pdf2image).
 - True redaction (content removal).
 - GUI improvements G0–G9 (see [Section 10](#10-gui-usability--intuitiveness-planned)).
-

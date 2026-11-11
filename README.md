@@ -20,7 +20,7 @@ yourself.
 
 ### Prerequisites
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - For Word/Excel conversion: Microsoft Office (Windows only)
 
 ### Installation
@@ -370,9 +370,20 @@ Both exes land in `dist\`. What goes into them is defined once, in `packaging/PD
 - `win32com` and `pythoncom` are reached through `importlib` in `office.py`, which PyInstaller
   cannot see, so they are listed as hidden imports and pywin32's DLLs are collected out of
   `pywin32_system32` by hand.
+- The build installs `PySide6-Essentials` and `PySide6-Pdf` (see `requirements.txt`), never the
+  `PySide6` metapackage: that would also pull `PySide6-Addons` (33 modules the app cannot reach)
+  and `PySide6-WebEngine` (~150 MB). `PySide6-Pdf` is the wheel that carries `QtPdf`.
+- The spec also drops the files the Qt, Pillow and pywin32 hooks collect but the app can never
+  load: Qt's `opengl32sw.dll` software-OpenGL fallback (~7 MB), Pillow's AVIF codec (~4 MB), Qt's
+  `translations/*.qm` (the app installs no `QTranslator`), and pywin32's MFC/Tk extras. Together
+  they were ~14 MB of the download — `packaging/report_bundle_size.py` measures what is left.
 - `PySide6.QtPdf` draws the page thumbnails. A bundle without it still starts and only reports
   "Thumbnails unavailable (QtPdf missing)", so `.github/workflows/release.yml` inspects the built
   archive for `PySide6/QtPdf.pyd` and `Qt6Pdf.dll` before publishing anything.
+- `packaging/report_bundle_size.py` answers "why is the download so large?" from the artifact
+  itself: it reads the built exe with PyInstaller's own archive reader and prints the breakdown
+  (Qt 6 first, then the Python runtime, reportlab, Pillow, pywin32 …). The release workflow runs it
+  for both exes and records the result in the run's step summary.
 
 Tagging a commit runs that workflow (`git tag v0.1.0` then `git push main v0.1.0`): it runs the
 test suite, builds both exes, verifies the bundle, writes the checksums and creates the release.
@@ -382,4 +393,3 @@ anything, which is the safe way to try a change to the spec.
 If a release does not appear, the failing step in the run says why. Once that is fixed, publish it
 without moving the tag: **Actions → Release → Run workflow**, and put the tag (`v0.1.0`) in the box.
 The workflow checks that tag out, builds the same exes and creates or updates that release.
-

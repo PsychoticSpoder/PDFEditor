@@ -88,6 +88,23 @@ jobs:
           if ($missing) { throw "Missing from the bundle: $($missing -join ', ')" }
           "Both exes carry: $($required -join ', ')"
 
+      - name: Report what the exes are made of (Qt, Python, reportlab, ...)
+        # Informational, and deliberately unable to block a release: it only explains the ~50 MB
+        # download, so a change in PyInstaller's archive format must not stop a publish.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $report = @()
+          foreach ($exe in @("dist/PDFEditor.exe", "dist/PDFEditor-console.exe")) {
+            $report += (python packaging/report_bundle_size.py --top 12 $exe)
+            $report += ""
+          }
+          $report | ForEach-Object { $_ }
+          '## What the exes are made of' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          '```' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          $report | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          '```' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
       - name: Keep the exes as a workflow artifact (dry runs, bug reports)
         # `always()` on purpose: when a check fails, the exes and their checksums are still worth
         # having — hunting for a build by hand is what a failed run used to mean.

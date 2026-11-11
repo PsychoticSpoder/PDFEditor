@@ -41,7 +41,8 @@ def _get_windows_com_client():
         win32 = importlib.import_module("win32com.client")
     except ImportError as exc:
         raise RuntimeError(
-            "Missing dependency 'pywin32'. Install requirements and ensure Microsoft Office is installed."
+            "Missing dependency 'pywin32'. Install requirements and ensure "
+            "Microsoft Office is installed."
         ) from exc
 
     return win32

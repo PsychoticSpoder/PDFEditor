@@ -39,7 +39,6 @@ def analyze_excel_file(file_path: str):
             # Count cells with different content types
             constants_count = 0
             formulas_count = 0
-            empty_formatted_count = 0
 
             try:
                 constants = worksheet.UsedRange.SpecialCells(-4123)  # xlCellTypeConstants
@@ -64,10 +63,12 @@ def analyze_excel_file(file_path: str):
 
             if empty_formatted > total_with_content:
                 print(
-                    f"\n⚠️  CRITICAL: {empty_formatted:,} empty formatted cells are bloating the UsedRange!"
+                    f"\n⚠️  CRITICAL: {empty_formatted:,} empty formatted cells are "
+                    "bloating the UsedRange!"
                 )
                 print(
-                    f"   This is {(empty_formatted / max(total_with_content, 1)):.1f}x more than actual data!"
+                    f"   This is {(empty_formatted / max(total_with_content, 1)):.1f}x more than "
+                    "actual data!"
                 )
 
             # Try Find method with different LookIn values
@@ -87,7 +88,8 @@ def analyze_excel_file(file_path: str):
                 )
                 if cell1:
                     print(
-                        f"  ✓ Find(xlFormulas) - Last cell: {cell1.Address} (Row {cell1.Row}, Col {cell1.Column})"
+                        f"  ✓ Find(xlFormulas) - Last cell: {cell1.Address} "
+                        f"(Row {cell1.Row}, Col {cell1.Column})"
                     )
                 else:
                     print("  ✗ Find(xlFormulas) - No cells found")
@@ -106,7 +108,8 @@ def analyze_excel_file(file_path: str):
                 )
                 if cell2:
                     print(
-                        f"  ✓ Find(xlValues) - Last cell: {cell2.Address} (Row {cell2.Row}, Col {cell2.Column})"
+                        f"  ✓ Find(xlValues) - Last cell: {cell2.Address} "
+                        f"(Row {cell2.Row}, Col {cell2.Column})"
                     )
                 else:
                     print("  ✗ Find(xlValues) - No cells found")

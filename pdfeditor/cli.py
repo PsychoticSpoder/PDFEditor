@@ -31,6 +31,7 @@ from .core import (
     batch_word_to_pdf,
     combine_pdfs,
     delete_page_range,
+    excel_to_pdf,
     extract_pages,
     get_metadata,
     images_to_pdf,
@@ -42,6 +43,7 @@ from .core import (
     set_metadata,
     split_pdf,
     watermark_pdf,
+    word_to_pdf,
 )
 from .core import (
     _validate_output_path as _core_validate_output_path,

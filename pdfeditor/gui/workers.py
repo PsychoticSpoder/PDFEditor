@@ -233,7 +233,8 @@ class BatchWorker(QObject):
                         self.log.emit(message)
 
                 self.finished.emit(
-                    f"Batch Word to PDF complete. Created {len(written_files)} files. Errors: {len(errors)}"
+                    f"Batch Word to PDF complete. Created {len(written_files)} files. "
+                    f"Errors: {len(errors)}"
                 )
 
             elif self.action == "excel-to-pdf":
@@ -271,7 +272,8 @@ class BatchWorker(QObject):
                         self.log.emit(message)
 
                 self.finished.emit(
-                    f"Batch Excel to PDF complete. Created {len(written_files)} files. Errors: {len(errors)}"
+                    f"Batch Excel to PDF complete. Created {len(written_files)} files. "
+                    f"Errors: {len(errors)}"
                 )
 
             elif self.action == "print":

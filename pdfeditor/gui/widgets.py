@@ -316,7 +316,9 @@ def _save_row(
     auto_fill = {"enabled": True}
 
     def choose_file() -> None:
-        file_name, _ = QFileDialog.getSaveFileName(None, f"Save {label}", line_edit.text(), filter_text)
+        file_name, _ = QFileDialog.getSaveFileName(
+            None, f"Save {label}", line_edit.text(), filter_text
+        )
         if file_name:
             auto_fill["enabled"] = False
             line_edit.setText(file_name)
@@ -324,6 +326,7 @@ def _save_row(
     button.clicked.connect(choose_file)
 
     if source_edit is not None:
+
         def sync_default(*_args: object) -> None:
             if not auto_fill["enabled"]:
                 return
@@ -404,7 +407,9 @@ def _row_widget(row: QLayout) -> QWidget:
 
 def _paths_from_input(raw_text: str) -> list[Path]:
     normalized = raw_text.replace("\n", ";")
-    return [Path(part.strip()).expanduser().resolve() for part in normalized.split(";") if part.strip()]
+    return [
+        Path(part.strip()).expanduser().resolve() for part in normalized.split(";") if part.strip()
+    ]
 
 
 def _existing_file_from_input(raw_text: str, label: str) -> Path:

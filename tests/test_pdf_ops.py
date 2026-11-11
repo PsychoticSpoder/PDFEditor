@@ -223,9 +223,7 @@ def test_batch_split_pdfs_can_combine_every_file_into_one_pdf(make_pdf, tmp_path
 
     # The page spec applies to each input PDF, and the prefix names the single output.
     picked_out = tmp_path / "picked"
-    batch_split_pdfs(
-        tmp_path, picked_out, "1", "first", "*.pdf", workers=1, mode=EXPORT_COMBINED
-    )
+    batch_split_pdfs(tmp_path, picked_out, "1", "first", "*.pdf", workers=1, mode=EXPORT_COMBINED)
     assert len(PdfReader(str(picked_out / "first_selected.pdf")).pages) == 2
 
 

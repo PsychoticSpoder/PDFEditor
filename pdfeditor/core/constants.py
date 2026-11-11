@@ -25,9 +25,9 @@ DEFAULT_WORKERS = 4
 # Excel PDF export: paper size name -> Excel XlPaperSize code
 EXCEL_PAPER_SIZES = {
     "Letter": 1,  # 8.5 x 11 inches
-    "Legal": 5,   # 8.5 x 14 inches
-    "A4": 9,      # 210 x 297 mm
-    "A3": 8,      # 297 x 420 mm
+    "Legal": 5,  # 8.5 x 14 inches
+    "A4": 9,  # 210 x 297 mm
+    "A3": 8,  # 297 x 420 mm
     "Tabloid": 2,  # 11 x 17 inches
     "Ledger": 3,  # 17 x 11 inches
 }

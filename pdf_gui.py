@@ -6,7 +6,7 @@ console script or ``python -m pdfeditor.gui``.
 
 from __future__ import annotations
 
-from pdfeditor.gui import MainWindow, main
+from pdfeditor.gui import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

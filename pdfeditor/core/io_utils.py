@@ -8,9 +8,10 @@ import io
 import os
 import tempfile
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 OfficeProgressCallback = Callable[[int, int, Path, str], None]
@@ -18,7 +19,6 @@ OfficeProgressCallback = Callable[[int, int, Path, str], None]
 
 class OperationCancelled(RuntimeError):
     """Raised when a user-requested cancellation stops a long-running operation."""
-
 
 
 def _validate_existing_file(path_text: str) -> Path:
@@ -65,14 +65,14 @@ def _validate_existing_dir(path_text: str) -> Path:
 
 def _collect_input_files(input_dir: Path, pattern: str) -> list[Path]:
     """Collect files from a directory matching the given pattern.
-    
+
     Args:
         input_dir: Directory to search for files.
         pattern: Glob pattern for file matching (e.g., "*.pdf").
-    
+
     Returns:
         Sorted list of matching file paths.
-    
+
     Raises:
         ValueError: If no files match the pattern.
     """
@@ -125,17 +125,17 @@ def _parallel_process(
     should_cancel: Callable[[], bool] | None = None,
 ) -> list[T]:
     """Process items in parallel using a thread pool.
-    
+
     Args:
         items: List of items to process.
         processor: Function to apply to each item.
         workers: Number of worker threads (None for auto-detection).
         should_cancel: Optional predicate; when True, processing stops and
             OperationCancelled is raised.
-    
+
     Returns:
         List of processed results in the same order as input items.
-    
+
     Raises:
         RuntimeError: If parallel processing fails to return all results.
     """

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -22,7 +22,6 @@ from ..core import (
     batch_watermark_pdfs,
     batch_word_to_pdf,
 )
-
 
 
 class BatchWorker(QObject):
@@ -146,7 +145,9 @@ class BatchWorker(QObject):
                     unique_names=True,
                 )
                 self.progress.emit(len(written_files), total, "Batch delete-pages complete")
-                self.finished.emit(f"Batch delete-pages complete. Created {len(written_files)} files.")
+                self.finished.emit(
+                    f"Batch delete-pages complete. Created {len(written_files)} files."
+                )
 
             elif self.action == "reorder":
                 if self.output_dir is None:
@@ -195,7 +196,9 @@ class BatchWorker(QObject):
                     unique_names=True,
                 )
                 self.progress.emit(len(written_files), total, "Batch PDF to text complete")
-                self.finished.emit(f"Batch PDF to text complete. Created {len(written_files)} files.")
+                self.finished.emit(
+                    f"Batch PDF to text complete. Created {len(written_files)} files."
+                )
 
             elif self.action == "word-to-pdf":
                 if self.output_dir is None:
@@ -272,7 +275,9 @@ class BatchWorker(QObject):
                 )
 
             elif self.action == "print":
-                printed_count = batch_print_pdfs(self.input_dir, self.pattern, self.workers, should_cancel=self._should_cancel)
+                printed_count = batch_print_pdfs(
+                    self.input_dir, self.pattern, self.workers, should_cancel=self._should_cancel
+                )
                 self.progress.emit(total, total, "Batch print complete")
                 self.finished.emit(f"Batch print submitted for {printed_count} files.")
 

@@ -1185,9 +1185,7 @@ class PageOrganizerWidget(QWidget):
             return
         written: list[Path] = []
         self._export(
-            lambda: written.extend(
-                self.document.split(output_dir, spec, None, unique_names=True)
-            ),
+            lambda: written.extend(self.document.split(output_dir, spec, None, unique_names=True)),
             lambda: f"Wrote {len(written)} page file(s) to {output_dir}.",
         )
 

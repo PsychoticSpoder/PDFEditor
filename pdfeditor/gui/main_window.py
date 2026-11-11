@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from PySide6.QtCore import QSettings, Qt, QThread, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -421,7 +421,9 @@ class MainWindow(QMainWindow):
         pane_layout.addLayout(mode_row)
 
         pane_layout.addWidget(QLabel("Input Images (in order)"))
-        self.images_inputs = OrderedFileList("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)")
+        self.images_inputs = OrderedFileList(
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)"
+        )
         self.images_inputs.list.setMinimumHeight(_MIN_CONVERT_LIST_HEIGHT)
         pane_layout.addWidget(self.images_inputs, stretch=1)
 
@@ -493,14 +495,14 @@ class MainWindow(QMainWindow):
 
         # Action-specific fields using QStackedWidget
         self.batch_action_stacked = QStackedWidget()
-        
+
         # Create empty/default widget
         empty_widget = QWidget()
         empty_layout = QVBoxLayout(empty_widget)
         empty_layout.addWidget(QLabel("Select an action to see options"))
         empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.batch_action_stacked.addWidget(empty_widget)
-        
+
         # Rotate widget
         rotate_widget = QWidget()
         rotate_layout = QFormLayout(rotate_widget)
@@ -514,7 +516,7 @@ class MainWindow(QMainWindow):
         rotate_layout.addRow("Angle", self.batch_angle)
         rotate_layout.addRow("Pages", self.batch_pages_rotate)
         self.batch_action_stacked.addWidget(rotate_widget)
-        
+
         # Watermark widget
         watermark_widget = QWidget()
         watermark_layout = QFormLayout(watermark_widget)
@@ -533,7 +535,7 @@ class MainWindow(QMainWindow):
         watermark_layout.addRow("Opacity", self.batch_opacity)
         watermark_layout.addRow("Font Size", self.batch_font_size)
         self.batch_action_stacked.addWidget(watermark_widget)
-        
+
         # Delete pages widget
         delete_widget = QWidget()
         delete_layout = QFormLayout(delete_widget)
@@ -541,7 +543,7 @@ class MainWindow(QMainWindow):
         self.batch_pages_delete.setPlaceholderText("Required: pages to delete, e.g. 2,4,6-8")
         delete_layout.addRow("Pages", self.batch_pages_delete)
         self.batch_action_stacked.addWidget(delete_widget)
-        
+
         # Reorder widget
         reorder_widget = QWidget()
         reorder_layout = QFormLayout(reorder_widget)
@@ -549,7 +551,7 @@ class MainWindow(QMainWindow):
         self.batch_order.setPlaceholderText("Required: full page order, e.g. 3,1,2")
         reorder_layout.addRow("Order", self.batch_order)
         self.batch_action_stacked.addWidget(reorder_widget)
-        
+
         # Export pages widget — the same modes the Single PDF Editing panel offers, plus
         # combining every input PDF into one file (which only a folder export can do).
         export_widget = QWidget()
@@ -837,7 +839,9 @@ class MainWindow(QMainWindow):
     def run_batch_operation(self) -> None:
         try:
             if self.batch_thread is not None and self.batch_thread.isRunning():
-                raise ValueError("A batch operation is already running. Please wait for it to complete.")
+                raise ValueError(
+                    "A batch operation is already running. Please wait for it to complete."
+                )
 
             action = str(self.batch_action.currentData())
             input_dir = _existing_dir_from_input(self.batch_input_dir.text(), "Input Folder")

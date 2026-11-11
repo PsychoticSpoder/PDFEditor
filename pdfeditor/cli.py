@@ -20,7 +20,6 @@ from .core import (
     _validate_existing_dir,
     _validate_existing_file,
     _validate_output_dir,
-    _validate_output_path as _core_validate_output_path,
     batch_delete_pages_pdfs,
     batch_excel_to_pdf,
     batch_pdf_to_text,
@@ -43,6 +42,9 @@ from .core import (
     set_metadata,
     split_pdf,
     watermark_pdf,
+)
+from .core import (
+    _validate_output_path as _core_validate_output_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +96,6 @@ def _parse_metadata_pairs(items: list[str]) -> dict[str, str]:
             raise ValueError(f"Metadata key must not be empty: {item!r}")
         metadata[key.strip()] = value.strip()
     return metadata
-
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -242,7 +243,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     images_to_pdf_parser.add_argument("-o", "--output", required=True, help="Output PDF path")
 
-    pdf_to_text_parser = convert_subparsers.add_parser("pdf-to-text", help="Extract text from a PDF")
+    pdf_to_text_parser = convert_subparsers.add_parser(
+        "pdf-to-text", help="Extract text from a PDF"
+    )
     pdf_to_text_parser.add_argument("-i", "--input", required=True, help="Input PDF path")
     pdf_to_text_parser.add_argument("-o", "--output", required=True, help="Output text file path")
 
@@ -266,7 +269,9 @@ def build_parser() -> argparse.ArgumentParser:
     batch_parser = subparsers.add_parser("batch", help="Batch process folders")
     batch_subparsers = batch_parser.add_subparsers(dest="batch_command", required=True)
 
-    batch_rotate_parser = batch_subparsers.add_parser("rotate", help="Rotate all matching PDFs in a folder")
+    batch_rotate_parser = batch_subparsers.add_parser(
+        "rotate", help="Rotate all matching PDFs in a folder"
+    )
     batch_rotate_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_rotate_parser.add_argument("--output-dir", required=True, help="Output folder path")
     batch_rotate_parser.add_argument("--angle", required=True, type=int, help="Rotation angle")
@@ -325,7 +330,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     batch_reorder_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_reorder_parser.add_argument("--output-dir", required=True, help="Output folder path")
-    batch_reorder_parser.add_argument("--order", required=True, help="Complete page order, e.g. 3,1,2")
+    batch_reorder_parser.add_argument(
+        "--order", required=True, help="Complete page order, e.g. 3,1,2"
+    )
     batch_reorder_parser.add_argument(
         "--pattern",
         default=DEFAULT_GLOB_PATTERN,
@@ -333,7 +340,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_workers_argument(batch_reorder_parser)
 
-    batch_split_parser = batch_subparsers.add_parser("split", help="Split all matching PDFs in a folder")
+    batch_split_parser = batch_subparsers.add_parser(
+        "split", help="Split all matching PDFs in a folder"
+    )
     batch_split_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_split_parser.add_argument("--output-dir", required=True, help="Output folder path")
     batch_split_parser.add_argument(
@@ -365,7 +374,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_workers_argument(batch_text_parser)
 
-    batch_print_parser = batch_subparsers.add_parser("print", help="Print all matching PDFs in a folder")
+    batch_print_parser = batch_subparsers.add_parser(
+        "print", help="Print all matching PDFs in a folder"
+    )
     batch_print_parser.add_argument("--input-dir", required=True, help="Input folder path")
     batch_print_parser.add_argument(
         "--pattern",
@@ -412,7 +423,9 @@ def build_parser() -> argparse.ArgumentParser:
     dnd_combine_parser.add_argument("output", help="Output PDF path")
     dnd_combine_parser.add_argument("inputs", nargs="+", help="Input PDF paths")
 
-    dnd_images_parser = dnd_subparsers.add_parser("images-to-pdf", help="Convert dropped images to one PDF")
+    dnd_images_parser = dnd_subparsers.add_parser(
+        "images-to-pdf", help="Convert dropped images to one PDF"
+    )
     dnd_images_parser.add_argument("output", help="Output PDF path")
     dnd_images_parser.add_argument("inputs", nargs="+", help="Input image paths")
 
@@ -429,11 +442,15 @@ def build_parser() -> argparse.ArgumentParser:
     dnd_print_parser = dnd_subparsers.add_parser("print", help="Print a dropped PDF")
     dnd_print_parser.add_argument("input", help="Input PDF path")
 
-    dnd_word_parser = dnd_subparsers.add_parser("word-to-pdf", help="Convert a dropped Word file to PDF")
+    dnd_word_parser = dnd_subparsers.add_parser(
+        "word-to-pdf", help="Convert a dropped Word file to PDF"
+    )
     dnd_word_parser.add_argument("input", help="Input Word file path")
     dnd_word_parser.add_argument("output", help="Output PDF path")
 
-    dnd_excel_parser = dnd_subparsers.add_parser("excel-to-pdf", help="Convert a dropped Excel file to PDF")
+    dnd_excel_parser = dnd_subparsers.add_parser(
+        "excel-to-pdf", help="Convert a dropped Excel file to PDF"
+    )
     dnd_excel_parser.add_argument("input", help="Input Excel file path")
     dnd_excel_parser.add_argument("output", help="Output PDF path")
 
@@ -591,7 +608,9 @@ def main() -> int:
                 input_dir = _validate_existing_dir(args.input_dir)
                 output_dir = _validate_output_dir(args.output_dir)
                 if args.workers > 1:
-                    print("Note: Word conversion is forced to single-worker mode for COM stability.")
+                    print(
+                        "Note: Word conversion is forced to single-worker mode for COM stability."
+                    )
                 written_files = batch_word_to_pdf(input_dir, output_dir, args.pattern, args.workers)
                 print(f"Created {len(written_files)} files in: {output_dir}")
 
@@ -599,7 +618,9 @@ def main() -> int:
                 input_dir = _validate_existing_dir(args.input_dir)
                 output_dir = _validate_output_dir(args.output_dir)
                 if args.workers > 1:
-                    print("Note: Excel conversion is forced to single-worker mode for COM stability.")
+                    print(
+                        "Note: Excel conversion is forced to single-worker mode for COM stability."
+                    )
                 written_files = batch_excel_to_pdf(
                     input_dir,
                     output_dir,

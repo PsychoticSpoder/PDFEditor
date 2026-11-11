@@ -8,8 +8,8 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from PIL import Image
 from pypdf import PageObject, PdfReader, PdfWriter
@@ -41,16 +41,15 @@ from .ranges import _parse_page_order, _parse_page_range
 logger = logging.getLogger(__name__)
 
 
-
 def rotate_pdf(input_file: Path, output_file: Path, angle: int, pages: str | None) -> None:
     """Rotate pages in a PDF file by the specified angle.
-    
+
     Args:
         input_file: Path to the input PDF file.
         output_file: Path to the output PDF file.
         angle: Rotation angle in degrees (must be multiple of 90).
         pages: Optional page range specification (e.g., "1,3,5-7").
-    
+
     Raises:
         ValueError: If angle is not a multiple of 90 or page range is invalid.
     """
@@ -68,7 +67,7 @@ def rotate_pdf(input_file: Path, output_file: Path, angle: int, pages: str | Non
         writer.add_page(page)
 
     _atomic_write_pdf(writer, output_file)
-    
+
     logger.info(f"Rotation complete: {output_file}")
 
 
@@ -277,7 +276,7 @@ def watermark_pdf(
     pages: str | None = None,
 ) -> None:
     """Add a text watermark to a PDF file.
-    
+
     Args:
         input_file: Path to the input PDF file.
         output_file: Path to the output PDF file.
@@ -285,7 +284,7 @@ def watermark_pdf(
         opacity: Watermark opacity (0.0 to 1.0, default: 0.25).
         font_size: Font size for watermark text (default: 48).
         pages: Optional 1-based page selection to watermark (default: every page).
-    
+
     Raises:
         ValueError: If opacity is outside valid range.
     """
@@ -310,13 +309,13 @@ def watermark_pdf(
         writer.pages[-1].merge_page(overlay)
 
     _atomic_write_pdf(writer, output_file)
-    
+
     logger.info(f"Watermark complete: {output_file}")
 
 
 def combine_pdfs(input_files: list[Path], output_file: Path) -> None:
     """Combine multiple PDF files into a single PDF.
-    
+
     Args:
         input_files: List of input PDF files to combine in order.
         output_file: Path to the output combined PDF file.
@@ -329,7 +328,7 @@ def combine_pdfs(input_files: list[Path], output_file: Path) -> None:
             writer.add_page(page)
 
     _atomic_write_pdf(writer, output_file)
-    
+
     logger.info("Combine operation completed successfully")
 
 
@@ -374,7 +373,7 @@ def images_to_pdf(input_images: list[Path], output_file: Path) -> None:
 
 def pdf_to_text(input_file: Path, output_file: Path) -> None:
     """Extract text content from a PDF file.
-    
+
     Args:
         input_file: Path to the input PDF file.
         output_file: Path to the output text file.
@@ -410,6 +409,8 @@ def print_pdf(input_file: Path) -> None:
         return
 
     raise RuntimeError("Printing is only implemented for Windows and systems with 'lp'.")
+
+
 def batch_rotate_pdfs(
     input_dir: Path,
     output_dir: Path,
@@ -421,7 +422,7 @@ def batch_rotate_pdfs(
     unique_names: bool = False,
 ) -> list[Path]:
     """Rotate pages in multiple PDF files in a directory.
-    
+
     Args:
         input_dir: Directory containing input PDF files.
         output_dir: Directory to write rotated PDF files.
@@ -432,7 +433,7 @@ def batch_rotate_pdfs(
         should_cancel: Optional cancellation check, polled between files.
         unique_names: When ``True`` an output that already exists is written beside it with a
             `` (1)``, `` (2)``, ... suffix instead of being overwritten.
-    
+
     Returns:
         List of paths to created PDF files.
     """
@@ -463,7 +464,7 @@ def batch_watermark_pdfs(
     unique_names: bool = False,
 ) -> list[Path]:
     """Add watermarks to multiple PDF files in a directory.
-    
+
     Args:
         input_dir: Directory containing input PDF files.
         output_dir: Directory to write watermarked PDF files.
@@ -472,7 +473,7 @@ def batch_watermark_pdfs(
         font_size: Font size for watermark text.
         pattern: Glob pattern for file matching.
         workers: Number of worker threads.
-    
+
     Returns:
         List of paths to created PDF files.
     """
@@ -646,13 +647,13 @@ def batch_pdf_to_text(
     unique_names: bool = False,
 ) -> list[Path]:
     """Extract text from multiple PDF files in a directory.
-    
+
     Args:
         input_dir: Directory containing input PDF files.
         output_dir: Directory to write text files.
         pattern: Glob pattern for file matching.
         workers: Number of worker threads.
-    
+
     Returns:
         List of paths to created text files.
     """
@@ -698,9 +699,9 @@ def _combine_pdfs_in_order(
     sparse but meaningful pages (e.g. pages containing only images or charts).
     Every skipped page is logged so false positives are easy to spot.
     """
-    
+
     writer = PdfWriter()
-    
+
     for pdf_path in input_pdfs:
         try:
             reader = PdfReader(str(pdf_path))
@@ -711,46 +712,46 @@ def _combine_pdfs_in_order(
                 writer.add_page(page)
         except Exception as e:
             logger.warning(f"Failed to add {pdf_path} to combined PDF: {e}")
-    
+
     _atomic_write_pdf(writer, output_file)
 
 
 def _is_blank_page(page) -> bool:
     """
     Check if a PDF page is mostly blank (only contains footer text).
-    
+
     Returns True if the page appears to be blank except for standard footers.
     """
     try:
         # Extract text from the page
         text = page.extract_text()
-        
+
         if not text:
             return True
-        
+
         # Remove whitespace and check character count
         cleaned_text = text.strip()
-        
+
         # If page has very little text, it's likely a footer-only page
         if len(cleaned_text) < 30:
             return True
-        
+
         # Count non-whitespace characters
         content_chars = sum(1 for c in cleaned_text if not c.isspace())
-        
+
         # If less than 50 characters of actual content, likely blank
         if content_chars < 50:
             return True
-        
+
         # Check line count - footer-only pages typically have 1-3 lines
-        lines = [line.strip() for line in cleaned_text.split('\n') if line.strip()]
+        lines = [line.strip() for line in cleaned_text.split("\n") if line.strip()]
         if len(lines) <= 3:
             # Check if lines look like footers (short, centered text)
             if all(len(line) < 60 for line in lines):
                 return True
-        
+
         return False
-        
+
     except Exception:
         # If we can't determine, assume it's not blank
         return False

@@ -7,8 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 def apply_theme(app: QApplication) -> None:
     """Apply a compact, consistent look to the whole application."""
-    app.setStyleSheet(
-        """
+    app.setStyleSheet("""
         QGroupBox {
             font-weight: 600;
             margin-top: 12px;
@@ -29,5 +28,4 @@ def apply_theme(app: QApplication) -> None:
         QStatusBar {
             color: #5f6368;
         }
-        """
-    )
+        """)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-
 def _parse_page_range(page_spec: str | None, total_pages: int) -> set[int]:
     if not page_spec:
         return set(range(total_pages))

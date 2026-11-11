@@ -7,7 +7,7 @@ directly.
 
 from __future__ import annotations
 
-from pdfeditor.cli import build_parser, main
+from pdfeditor.cli import main
 from pdfeditor.core import *  # noqa: F401,F403  (re-export the public core API)
 
 if __name__ == "__main__":

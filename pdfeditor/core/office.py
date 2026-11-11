@@ -8,9 +8,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
 
 from .constants import (
     DEFAULT_EXCEL_PAPER_SIZE,
@@ -460,9 +460,7 @@ def batch_excel_to_pdf(
                         if len(temp_pdfs) == 1:
                             shutil.copyfile(temp_pdfs[0], output_file)
                         else:
-                            _combine_pdfs_in_order(
-                                temp_pdfs, output_file, skip_blank_pages=True
-                            )
+                            _combine_pdfs_in_order(temp_pdfs, output_file, skip_blank_pages=True)
                         _ensure_pdf_output(output_file)
                         written_files.append(output_file)
                         watchdog.bump()

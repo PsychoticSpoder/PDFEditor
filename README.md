@@ -36,7 +36,7 @@ py -m pip install --upgrade pip
 # Install dependencies
 py -m pip install -r requirements.txt
 
-# Optional: install as an editable package (adds the `pdf-tool` and
+# Install as an editable package (adds the `pdf-tool` and
 # `pdf-editor-gui` console commands and enables `python -m pdfeditor`)
 py -m pip install -e .
 ```
@@ -45,7 +45,7 @@ py -m pip install -e .
 
 ```powershell
 # Install development dependencies
-py -m pip install pytest pytest-cov black ruff mypy pre-commit
+py -m pip install pytest pytest-cov pytest-qt black ruff mypy pre-commit
 
 # Run tests
 pytest
@@ -62,6 +62,11 @@ mypy pdfeditor
 # Install the pre-commit hooks
 pre-commit install
 ```
+
+> **Tip:** run these commands with the virtual environment activated
+> (`.\.venv\Scripts\Activate.ps1`). When it is inactive, `pytest`, `black` and `ruff` may
+> resolve to globally installed copies. The GUI tests skip themselves when PySide6 or
+> pytest-qt is missing; the rest of the suite still runs.
 
 ## 2. Command-Line Usage
 
@@ -211,6 +216,8 @@ you use **Save As…**.
   for — the "PDF to edit" row, the Merge / Images→PDF / Print lists and the operation inputs
   all refuse a dropped spreadsheet or folder (with the "no drop" cursor, and a note under the
   lists) instead of handing it to pypdf. Merge's output path is filled in from the first input
+- **Never overwrites by default**: when a chosen output name is already taken, the file is
+  written beside it with a ` (1)`, ` (2)`, … suffix instead of clobbering the existing one
 - **Progress tracking**: Live progress bar and status for batch operations
 - **Error handling**: Continue-on-error option for bulk Word/Excel conversion
 - **Multi-threading**: Configurable worker threads for batch tasks
@@ -229,6 +236,16 @@ you use **Save As…**.
 ## 5. Troubleshooting
 
 ### Common Issues
+
+**`ModuleNotFoundError: No module named 'pdfeditor'` when running `pytest`**
+- Run the tests with the virtual environment active (`.\.venv\Scripts\Activate.ps1`); with
+  it inactive, a shell may resolve a global `pytest` that cannot see this package
+- The repo root is put on `sys.path` for pytest by `pythonpath = ["."]` in `pyproject.toml`,
+  so `pytest` works from a fresh clone; `py -m pip install -e .` also makes it importable
+
+**GUI tests report `SKIPPED ... could not import 'pytestqt'`**
+- pytest-qt and PySide6 are only needed by the GUI tests; the rest of the suite runs
+  without them. Install them with `py -m pip install pytest-qt PySide6`
 
 **"File not found" errors**
 - Ensure file paths are absolute or relative to current directory

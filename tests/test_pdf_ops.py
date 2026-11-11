@@ -9,6 +9,7 @@ from pdfeditor.core import (
     EXPORT_CHUNKED,
     EXPORT_COMBINED,
     EXPORT_SINGLE,
+    batch_rotate_pdfs,
     batch_split_pdfs,
     combine_pdfs,
     delete_page_range,
@@ -233,6 +234,33 @@ def test_batch_split_pdfs_rejects_an_unknown_mode(make_pdf, tmp_path):
 
     with pytest.raises(ValueError):
         batch_split_pdfs(tmp_path, tmp_path / "out", None, None, "*.pdf", mode="nonsense")
+
+
+def test_split_pdf_writes_unique_names_when_asked(make_pdf, tmp_path):
+    src = make_pdf("report.pdf", pages=2)
+    out = tmp_path / "split"
+    out.mkdir()
+    (out / "report_page_001.pdf").write_bytes(b"%PDF-original")
+
+    written = split_pdf(src, out, None, None, unique_names=True)
+
+    assert sorted(path.name for path in written) == [
+        "report_page_001 (1).pdf",
+        "report_page_002.pdf",
+    ]
+    assert (out / "report_page_001.pdf").read_bytes() == b"%PDF-original"
+
+
+def test_batch_rotate_pdfs_writes_unique_names_when_asked(make_pdf, tmp_path):
+    make_pdf("report.pdf", pages=2)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "report_rotated.pdf").write_bytes(b"%PDF-original")
+
+    written = batch_rotate_pdfs(tmp_path, out, 90, None, "*.pdf", workers=1, unique_names=True)
+
+    assert [path.name for path in written] == ["report_rotated (1).pdf"]
+    assert (out / "report_rotated.pdf").read_bytes() == b"%PDF-original"
 
 
 def test_insert_pages(make_pdf, tmp_path):

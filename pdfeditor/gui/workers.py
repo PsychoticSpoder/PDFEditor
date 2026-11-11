@@ -104,6 +104,7 @@ class BatchWorker(QObject):
                     self.pattern,
                     self.workers,
                     should_cancel=self._should_cancel,
+                    unique_names=True,
                 )
                 self.progress.emit(len(written_files), total, "Batch rotate complete")
                 self.finished.emit(f"Batch rotate complete. Created {len(written_files)} files.")
@@ -125,6 +126,7 @@ class BatchWorker(QObject):
                     self.pattern,
                     self.workers,
                     should_cancel=self._should_cancel,
+                    unique_names=True,
                 )
                 self.progress.emit(len(written_files), total, "Batch watermark complete")
                 self.finished.emit(f"Batch watermark complete. Created {len(written_files)} files.")
@@ -141,6 +143,7 @@ class BatchWorker(QObject):
                     self.pattern,
                     self.workers,
                     should_cancel=self._should_cancel,
+                    unique_names=True,
                 )
                 self.progress.emit(len(written_files), total, "Batch delete-pages complete")
                 self.finished.emit(f"Batch delete-pages complete. Created {len(written_files)} files.")
@@ -157,6 +160,7 @@ class BatchWorker(QObject):
                     self.pattern,
                     self.workers,
                     should_cancel=self._should_cancel,
+                    unique_names=True,
                 )
                 self.progress.emit(len(written_files), total, "Batch reorder complete")
                 self.finished.emit(f"Batch reorder complete. Created {len(written_files)} files.")
@@ -174,6 +178,7 @@ class BatchWorker(QObject):
                     should_cancel=self._should_cancel,
                     mode=self.export_mode,
                     chunk_size=self.chunk_size,
+                    unique_names=True,
                 )
                 self.progress.emit(total, total, "Batch export complete")
                 self.finished.emit(f"Batch export complete. Created {created_count} files.")
@@ -187,6 +192,7 @@ class BatchWorker(QObject):
                     self.pattern,
                     self.workers,
                     should_cancel=self._should_cancel,
+                    unique_names=True,
                 )
                 self.progress.emit(len(written_files), total, "Batch PDF to text complete")
                 self.finished.emit(f"Batch PDF to text complete. Created {len(written_files)} files.")
@@ -215,6 +221,7 @@ class BatchWorker(QObject):
                     self.continue_on_error,
                     errors,
                     should_cancel=self._should_cancel,
+                    unique_names=True,
                 )
 
                 if errors:
@@ -252,6 +259,7 @@ class BatchWorker(QObject):
                     errors,
                     paper_size,
                     should_cancel=self._should_cancel,
+                    unique_names=True,
                 )
 
                 if errors:

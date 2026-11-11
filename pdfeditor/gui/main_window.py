@@ -44,6 +44,7 @@ from ..core import (
     MAX_WORKERS,
     MIN_WORKERS,
     OUTPUT_DIR_ACTIONS,
+    _unique_path,
     batch_excel_to_pdf,
     batch_pdf_to_text,
     batch_word_to_pdf,
@@ -670,7 +671,8 @@ class MainWindow(QMainWindow):
                     raise FileNotFoundError(f"Input PDF not found: {file_path}")
                 if not self.combine_inputs.accepts(str(file_path)):
                     raise ValueError(f"Not a PDF file: {file_path.name}")
-            output_file = _output_file_from_input(self.combine_output.text(), "Output PDF")
+            requested = _output_file_from_input(self.combine_output.text(), "Output PDF")
+            output_file = _unique_path(requested)
             self._run_async(lambda: combine_pdfs(inputs, output_file), "Combine complete.")
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
@@ -688,10 +690,13 @@ class MainWindow(QMainWindow):
                     raise ValueError(f"Not an image file: {file_path.name}")
 
             if self.images_mode.currentData() == "per-image":
-                targets = _image_split_targets(
-                    inputs,
-                    _output_dir_from_input(self.images_output_dir.text(), "Output Folder"),
-                )
+                targets = [
+                    (source, _unique_path(target))
+                    for source, target in _image_split_targets(
+                        inputs,
+                        _output_dir_from_input(self.images_output_dir.text(), "Output Folder"),
+                    )
+                ]
 
                 def write_each() -> str:
                     for source, target in targets:
@@ -701,7 +706,8 @@ class MainWindow(QMainWindow):
                 self._run_async(write_each, "Conversion complete.")
                 return
 
-            output_file = _output_file_from_input(self.images_output.text(), "Output PDF")
+            requested = _output_file_from_input(self.images_output.text(), "Output PDF")
+            output_file = _unique_path(requested)
             self._run_async(lambda: images_to_pdf(inputs, output_file), "Conversion complete.")
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
@@ -759,7 +765,8 @@ class MainWindow(QMainWindow):
                 )
                 return
             input_file = _existing_file_from_input(panel.input_edit.text(), input_label)
-            output_file = _output_file_from_input(panel.output_edit.text(), "Output")
+            requested = _output_file_from_input(panel.output_edit.text(), "Output")
+            output_file = _unique_path(requested)
             self._run_async(lambda: single(input_file, output_file), success_message)
         except Exception as exc:  # noqa: BLE001
             self._show_error(exc)
@@ -772,7 +779,7 @@ class MainWindow(QMainWindow):
         workers: int,
         _continue_on_error: bool,
     ) -> str:
-        written = batch_pdf_to_text(input_dir, output_dir, pattern, workers)
+        written = batch_pdf_to_text(input_dir, output_dir, pattern, workers, unique_names=True)
         return f"Extracted text from {len(written)} PDF(s)."
 
     @staticmethod
@@ -784,7 +791,9 @@ class MainWindow(QMainWindow):
         continue_on_error: bool,
     ) -> str:
         # Word/Excel go through COM, which is single-threaded whatever the worker count.
-        written = batch_word_to_pdf(input_dir, output_dir, pattern, 1, None, continue_on_error)
+        written = batch_word_to_pdf(
+            input_dir, output_dir, pattern, 1, None, continue_on_error, unique_names=True
+        )
         return f"Converted {len(written)} Word file(s) to PDF."
 
     def _bulk_excel_to_pdf(
@@ -804,6 +813,7 @@ class MainWindow(QMainWindow):
             continue_on_error,
             None,
             self.excel_paper_size.currentText(),
+            unique_names=True,
         )
         return f"Converted {len(written)} Excel file(s) to PDF."
 

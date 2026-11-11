@@ -34,6 +34,22 @@ def _validate_output_path(path_text: str) -> Path:
     return path
 
 
+def _unique_path(path: Path) -> Path:
+    """Return ``path`` when it is free, otherwise ``stem (n)`` with the first free ``n``.
+
+    The GUI uses this to avoid clobbering an existing output: ``report_rotated.pdf`` becomes
+    ``report_rotated (1).pdf`` when the original name is already taken.
+    """
+    if not path.exists():
+        return path
+    counter = 1
+    while True:
+        candidate = path.with_name(f"{path.stem} ({counter}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def _validate_output_dir(path_text: str) -> Path:
     path = Path(path_text).expanduser().resolve()
     path.mkdir(parents=True, exist_ok=True)

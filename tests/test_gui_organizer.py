@@ -252,6 +252,30 @@ def test_organizer_exports_single_and_per_page_and_saves(qtbot, make_pdf, tmp_pa
     assert len(PdfReader(str(tmp_path / "final.pdf")).pages) == 3
 
 
+def test_organizer_export_per_page_keeps_existing_files_and_writes_unique_names(
+    qtbot, make_pdf, tmp_path, monkeypatch
+):
+    """An earlier per-page export is left alone; the new pages land as `` (1)`` files."""
+    _needs_qtpdf()
+    widget = _open(make_pdf(pages=3), qtbot)
+    monkeypatch.setattr(org, "QFileDialog", _FakeFileDialog)
+
+    output_dir = tmp_path / "split"
+    output_dir.mkdir()
+    stem = widget.document.source.stem
+    existing = output_dir / f"{stem}_page_001.pdf"
+    existing.write_bytes(b"%PDF-original")
+
+    _FakeFileDialog.path = str(output_dir)
+    widget.export_per_page()
+
+    # The pre-existing file is untouched, and the new page files are written beside it.
+    assert existing.read_bytes() == b"%PDF-original"
+    written = sorted(path.name for path in output_dir.glob("*.pdf"))
+    assert f"{stem}_page_001 (1).pdf" in written
+    assert len(written) == 4
+
+
 def test_organizer_revert_restores_the_original(qtbot, make_pdf):
     _needs_qtpdf()
     widget = _open(make_pdf(pages=3), qtbot)

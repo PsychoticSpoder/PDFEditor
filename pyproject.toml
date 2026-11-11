@@ -40,6 +40,9 @@ packages = ["pdfeditor", "pdfeditor.core", "pdfeditor.gui"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+# Let `pytest` import the local `pdfeditor` package from a fresh clone,
+# without requiring `pip install -e .`.
+pythonpath = ["."]
 
 [tool.coverage.run]
 source = ["pdfeditor"]

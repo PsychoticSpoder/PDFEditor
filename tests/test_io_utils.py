@@ -17,6 +17,7 @@ from pdfeditor.core.io_utils import (
     _is_office_temp_file,
     _parallel_process,
     _resolve_workers,
+    _unique_path,
     _validate_existing_file,
     _validate_output_dir,
 )
@@ -37,6 +38,20 @@ def test_validate_output_dir_creates(tmp_path):
     target = tmp_path / "nested" / "out"
     assert _validate_output_dir(str(target)) == target
     assert target.is_dir()
+
+
+def test_unique_path_returns_a_free_path_unchanged(tmp_path):
+    target = tmp_path / "out.pdf"
+    assert _unique_path(target) == target
+
+
+def test_unique_path_appends_a_counter_when_taken(tmp_path):
+    target = tmp_path / "out.pdf"
+    target.write_bytes(b"%PDF")
+    assert _unique_path(target) == tmp_path / "out (1).pdf"
+
+    (tmp_path / "out (1).pdf").write_bytes(b"%PDF")
+    assert _unique_path(target) == tmp_path / "out (2).pdf"
 
 
 def test_collect_input_files_no_match(tmp_path):

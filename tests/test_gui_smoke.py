@@ -512,15 +512,22 @@ def test_bulk_word_conversion_reports_the_file_count(monkeypatch, tmp_path):
     from pdfeditor.gui import main_window as window_module
 
     seen: list[tuple] = []
+    kwargs_seen: list[dict] = []
     written = [tmp_path / "a.pdf", tmp_path / "b.pdf"]
-    monkeypatch.setattr(
-        window_module, "batch_word_to_pdf", lambda *args: seen.append(args) or written
-    )
+
+    def fake_batch(*args, **kwargs):
+        seen.append(args)
+        kwargs_seen.append(kwargs)
+        return written
+
+    monkeypatch.setattr(window_module, "batch_word_to_pdf", fake_batch)
 
     message = window_module.MainWindow._bulk_word_to_pdf(tmp_path, tmp_path, "*.docx", 4, True)
 
     # Word/Excel go through COM, which is single-threaded whatever the panel's workers say.
     assert seen == [(tmp_path, tmp_path, "*.docx", 1, None, True)]
+    # The GUI asks for unique output names so an existing PDF is never clobbered.
+    assert kwargs_seen == [{"unique_names": True}]
     assert message == "Converted 2 Word file(s) to PDF."
 
 
@@ -736,6 +743,55 @@ def test_merge_refuses_a_spreadsheet_that_reached_the_list(qtbot, tmp_path, monk
     assert len(errors) == 1
     assert isinstance(errors[0], ValueError)
     assert "Not a PDF file: b.xlsx" in str(errors[0])
+
+
+def test_merge_keeps_an_existing_output_and_writes_a_unique_name(qtbot, tmp_path, monkeypatch):
+    """An existing output is never clobbered: the merge lands beside it as ``out (1).pdf``."""
+    from pdfeditor.gui import main_window as window_module
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    source = tmp_path / "a.pdf"
+    source.write_bytes(b"%PDF")
+    existing = tmp_path / "out.pdf"
+    existing.write_bytes(b"%PDF-original")
+    window.combine_inputs.add_paths([str(source)])
+    window.combine_output.setText(str(existing))
+
+    written: list = []
+    monkeypatch.setattr(
+        window_module, "combine_pdfs", lambda inputs, output: written.append(output)
+    )
+    monkeypatch.setattr(window, "_run_async", lambda operation, message: operation())
+
+    window.run_combine()
+
+    assert [path.name for path in written] == ["out (1).pdf"]
+    assert existing.read_bytes() == b"%PDF-original"
+
+
+def test_merge_uses_the_requested_name_when_it_is_free(qtbot, tmp_path, monkeypatch):
+    """With no clash the requested filename is used unchanged."""
+    from pdfeditor.gui import main_window as window_module
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    source = tmp_path / "a.pdf"
+    source.write_bytes(b"%PDF")
+    window.combine_inputs.add_paths([str(source)])
+    window.combine_output.setText(str(tmp_path / "out.pdf"))
+
+    written: list = []
+    monkeypatch.setattr(
+        window_module, "combine_pdfs", lambda inputs, output: written.append(output)
+    )
+    monkeypatch.setattr(window, "_run_async", lambda operation, message: operation())
+
+    window.run_combine()
+
+    assert [path.name for path in written] == ["out.pdf"]
 
 
 def test_print_panel_lists_input_pdfs_in_order(qtbot, tmp_path):

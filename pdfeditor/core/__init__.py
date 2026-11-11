@@ -41,6 +41,7 @@ from .io_utils import (
     _is_office_temp_file,
     _parallel_process,
     _resolve_workers,
+    _unique_path,
     _validate_existing_dir,
     _validate_existing_file,
     _validate_output_dir,

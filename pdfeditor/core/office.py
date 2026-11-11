@@ -26,6 +26,7 @@ from .io_utils import (
     _emit_office_progress,
     _ensure_pdf_output,
     _filter_office_batch_files,
+    _unique_path,
 )
 from .pdf_ops import _combine_pdfs_in_order
 
@@ -228,6 +229,7 @@ def _batch_libreoffice(
     continue_on_error: bool,
     error_list: list[str],
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     """Convert documents with LibreOffice, mirroring the COM batch contract."""
     written_files: list[Path] = []
@@ -238,6 +240,8 @@ def _batch_libreoffice(
         _emit_office_progress(progress_callback, index, total, input_file, "start")
         try:
             output_file = output_dir / f"{input_file.stem}.pdf"
+            if unique_names:
+                output_file = _unique_path(output_file)
             _libreoffice_to_pdf(input_file, output_file)
             written_files.append(output_file)
             _emit_office_progress(progress_callback, index, total, input_file, "ok")
@@ -320,13 +324,20 @@ def batch_word_to_pdf(
     continue_on_error: bool = False,
     errors: list[str] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     files = _filter_office_batch_files(_collect_input_files(input_dir, pattern))
     error_list = errors if errors is not None else []
     total = len(files)
     if not _com_available():
         return _batch_libreoffice(
-            files, output_dir, progress_callback, continue_on_error, error_list, should_cancel
+            files,
+            output_dir,
+            progress_callback,
+            continue_on_error,
+            error_list,
+            should_cancel,
+            unique_names=unique_names,
         )
     written_files: list[Path] = []
 
@@ -336,6 +347,8 @@ def batch_word_to_pdf(
             for offset, input_file in enumerate(chunk, start=1):
                 index = start + offset
                 output_file = output_dir / f"{input_file.stem}.pdf"
+                if unique_names:
+                    output_file = _unique_path(output_file)
                 _emit_office_progress(progress_callback, index, total, input_file, "start")
 
                 if should_cancel is not None and should_cancel():
@@ -387,6 +400,7 @@ def batch_excel_to_pdf(
     errors: list[str] | None = None,
     paper_size: str = DEFAULT_EXCEL_PAPER_SIZE,
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     """Convert multiple Excel files to PDF in batch.
 
@@ -400,7 +414,13 @@ def batch_excel_to_pdf(
     total = len(files)
     if not _com_available():
         return _batch_libreoffice(
-            files, output_dir, progress_callback, continue_on_error, error_list, should_cancel
+            files,
+            output_dir,
+            progress_callback,
+            continue_on_error,
+            error_list,
+            should_cancel,
+            unique_names=unique_names,
         )
     written_files: list[Path] = []
 
@@ -412,6 +432,8 @@ def batch_excel_to_pdf(
                 for offset, input_file in enumerate(chunk, start=1):
                     index = start + offset
                     output_file = output_dir / f"{input_file.stem}.pdf"
+                    if unique_names:
+                        output_file = _unique_path(output_file)
                     _emit_office_progress(progress_callback, index, total, input_file, "start")
 
                     if should_cancel is not None and should_cancel():

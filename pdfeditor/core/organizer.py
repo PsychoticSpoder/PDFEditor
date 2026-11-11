@@ -180,10 +180,11 @@ class PageOrganizerDocument:
         pages: str | None = None,
         prefix: str | None = None,
         chunk_size: int | None = None,
+        unique_names: bool = False,
     ) -> list[Path]:
         """Write one PDF per page — or per ``chunk_size`` pages — into ``output_dir``."""
         return split_pdf(
-            self.path, Path(output_dir).expanduser(), pages, prefix, chunk_size
+            self.path, Path(output_dir).expanduser(), pages, prefix, chunk_size, unique_names
         )
 
     def save_as(self, output_file: Path | str) -> Path:

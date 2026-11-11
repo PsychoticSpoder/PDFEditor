@@ -34,6 +34,7 @@ from .io_utils import (
     _atomic_write_text,
     _collect_input_files,
     _parallel_process,
+    _unique_path,
 )
 from .ranges import _parse_page_order, _parse_page_range
 
@@ -192,6 +193,7 @@ def split_pdf(
     pages: str | None,
     prefix: str | None,
     chunk_size: int | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     """Split a PDF into individual page files, or into groups of pages.
 
@@ -204,6 +206,8 @@ def split_pdf(
             any other value writes one file per group of that many pages, so a 10-page
             selection with ``chunk_size=2`` becomes five two-page PDFs. The final group may
             be shorter, and the pages keep their original order.
+        unique_names: When ``True`` an output that already exists is written beside it with a
+            `` (1)``, `` (2)``, ... suffix instead of being overwritten.
 
     Returns:
         List of paths to created PDF files.
@@ -227,6 +231,8 @@ def split_pdf(
             output_file = (
                 output_dir / f"{name_prefix}_pages_{group[0] + 1:03d}-{group[-1] + 1:03d}.pdf"
             )
+        if unique_names:
+            output_file = _unique_path(output_file)
         _atomic_write_pdf(writer, output_file)
         written_files.append(output_file)
 
@@ -412,6 +418,7 @@ def batch_rotate_pdfs(
     pattern: str,
     workers: int | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     """Rotate pages in multiple PDF files in a directory.
     
@@ -422,6 +429,9 @@ def batch_rotate_pdfs(
         pages: Optional page range to rotate (e.g., "1,3,5-7").
         pattern: Glob pattern for file matching.
         workers: Number of worker threads.
+        should_cancel: Optional cancellation check, polled between files.
+        unique_names: When ``True`` an output that already exists is written beside it with a
+            `` (1)``, `` (2)``, ... suffix instead of being overwritten.
     
     Returns:
         List of paths to created PDF files.
@@ -431,6 +441,8 @@ def batch_rotate_pdfs(
 
     def _process(input_file: Path) -> Path:
         output_file = output_dir / f"{input_file.stem}_rotated.pdf"
+        if unique_names:
+            output_file = _unique_path(output_file)
         rotate_pdf(input_file, output_file, angle, pages)
         return output_file
 
@@ -448,6 +460,7 @@ def batch_watermark_pdfs(
     pattern: str = DEFAULT_GLOB_PATTERN,
     workers: int | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     """Add watermarks to multiple PDF files in a directory.
     
@@ -468,6 +481,8 @@ def batch_watermark_pdfs(
 
     def _process(input_file: Path) -> Path:
         output_file = output_dir / f"{input_file.stem}_watermarked.pdf"
+        if unique_names:
+            output_file = _unique_path(output_file)
         watermark_pdf(input_file, output_file, text, opacity, font_size)
         return output_file
 
@@ -483,11 +498,14 @@ def batch_delete_pages_pdfs(
     pattern: str,
     workers: int | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     files = _collect_input_files(input_dir, pattern)
 
     def _process(input_file: Path) -> Path:
         output_file = output_dir / f"{input_file.stem}_deleted.pdf"
+        if unique_names:
+            output_file = _unique_path(output_file)
         delete_page_range(input_file, output_file, pages)
         return output_file
 
@@ -501,11 +519,14 @@ def batch_reorder_pdfs(
     pattern: str,
     workers: int | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     files = _collect_input_files(input_dir, pattern)
 
     def _process(input_file: Path) -> Path:
         output_file = output_dir / f"{input_file.stem}_reordered.pdf"
+        if unique_names:
+            output_file = _unique_path(output_file)
         reorder_pages(input_file, output_file, order_spec)
         return output_file
 
@@ -539,6 +560,7 @@ def batch_split_pdfs(
     should_cancel: Callable[[], bool] | None = None,
     mode: str = EXPORT_PER_PAGE,
     chunk_size: int | None = None,
+    unique_names: bool = False,
 ) -> int:
     """Export pages from multiple PDF files in a directory.
 
@@ -560,6 +582,8 @@ def batch_split_pdfs(
             and :data:`~pdfeditor.core.EXPORT_COMBINED` a single PDF holding the chosen pages
             of every matching file.
         chunk_size: Pages per exported file in ``EXPORT_CHUNKED`` mode.
+        unique_names: When ``True`` an output that already exists is written beside it with a
+            `` (1)``, `` (2)``, ... suffix instead of being overwritten.
 
     Returns:
         Total number of created PDF files.
@@ -578,7 +602,10 @@ def batch_split_pdfs(
         if not files:
             return 0
         name = (prefix or "").strip() or "combined"
-        _combine_selected_pages(files, output_dir / f"{name}_selected.pdf", pages, should_cancel)
+        combined_output = output_dir / f"{name}_selected.pdf"
+        if unique_names:
+            combined_output = _unique_path(combined_output)
+        _combine_selected_pages(files, combined_output, pages, should_cancel)
         logger.info("Batch export complete: created 1 file")
         return 1
 
@@ -589,6 +616,8 @@ def batch_split_pdfs(
     def _process(input_file: Path) -> int:
         if mode == EXPORT_SINGLE:
             output_file = output_dir / f"{input_file.stem}_selected.pdf"
+            if unique_names:
+                output_file = _unique_path(output_file)
             extract_pages(input_file, output_file, pages)
             return 1
 
@@ -599,6 +628,7 @@ def batch_split_pdfs(
             pages,
             name_prefix,
             chunk_size if mode == EXPORT_CHUNKED else None,
+            unique_names=unique_names,
         )
         return len(written_files)
 
@@ -613,6 +643,7 @@ def batch_pdf_to_text(
     pattern: str,
     workers: int | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    unique_names: bool = False,
 ) -> list[Path]:
     """Extract text from multiple PDF files in a directory.
     
@@ -630,6 +661,8 @@ def batch_pdf_to_text(
 
     def _process(input_file: Path) -> Path:
         output_file = output_dir / f"{input_file.stem}.txt"
+        if unique_names:
+            output_file = _unique_path(output_file)
         pdf_to_text(input_file, output_file)
         return output_file
 
